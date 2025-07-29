@@ -25,6 +25,10 @@ This dataset consists of data from each day’s top 200 trending YouTube videos 
 
 The dataset was found on Kaggle at `https://www.kaggle.com/datasets/rsrishav/youtube-trending-video-dataset`. The data consists of a csv with trending video data, such a views, engagement, and descriptive text fields, and a nodes json table with channel category labels.
 
+The Datatsets for this project could not be added to Github due to large file sizes, however, this project can be replicated if the following files are downloaded from the above kaggle link:
+`US_youtube_trending_data.csv`
+`US_category_id.json`
+
 ## 📦 Mining Techniques Used
 - Data cleaning and wrangling (`dplyr`, `tidyr`)
 - Descriptive Statistics and Visualization (`ggplot2`)
