@@ -99,6 +99,9 @@ Using YouTube API metadata could improve differentiation between company channel
 
 ## 👥 Team 
 **Alina Hagen:** Project lead, Association Mining, Debugging
+
 **Joshua Motte:** Data Wrangling, Debugging
+
 **Brodie Vancil:** Descriptive Statistics
+
 **Sherman LaCost:** Sentiment Analysis 
