@@ -1,0 +1,176 @@
+---
+title: "Youtube -- Data Cleaning"
+author: "Joshua Motte"
+date: "`r Sys.Date()`"
+---
+## Data and Text Mining Final Project: Maximizing Success on YouTube's Trending Page: Content Optimization Strategies Based on Analysis of the Top 200 Videos Over the Last Four Years
+
+**Topic:** Success Factors on YouTube Trending Videos 
+
+**Question:** What are common trends among the top trending YouTube videos in the US, and how do different factors impact their success on the trending page?
+
+**Goal:** To analyze data from each day’s top 200 trending YouTube videos from August 2020 to
+April 2024 and identify success factors among the most successful videos in the U.S. This
+analysis will evaluate a video's success on the trending page based on the following success metrics:
+
+  - *Engagement Ratio:* The total audience interaction (sum of comments, likes, and
+  dislikes) relative to the view count as recorded on the final day the video appears on the
+  trending list (representing the highest engagement level captured in the dataset)
+  
+  - *Trending Speed:* How long a video took to reach the trending page
+  
+  - *Trending Retention:* How long a video remains on the trending page
+  
+---
+## Libraries
+``` {r, message = FALSE, warning = FALSE}
+
+# Libraries / Packages
+library(arules)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(grid)
+library(gridExtra)
+library(jsonlite)
+library(kableExtra)
+library(knitr)
+library(lubridate)
+library(purrr)
+library(reshape2)
+library(stringr)
+library(syuzhet)
+library(textdata)
+library(tidytext)
+library(tidyr)
+
+```
+
+## Data Processing, Cleaning, and Unique Video DF Creation
+```{r, "Data Processing and Cleaning", warning=FALSE}
+#loading in data
+yt <- read.csv("data/US_youtube_trending_data.csv")
+
+#get rid of columns we aren't using
+yt$channelId <- NULL
+yt$thumbnail_link <- NULL
+
+
+#normalize the column names
+colnames(yt) <- c("video_id", "title", "date_published", "channel_title", 
+                  "category_id", "date_trending", "tags", "views", "likes",
+                  "dislikes", "comments", "comments_disabled", "ratings_disabled",
+                  "description")
+
+
+#turn publishedAt and trending_date to date type
+yt$date_published <- ymd_hms(yt$date_published)
+yt$date_trending <- ymd_hms(yt$date_trending)
+
+
+#turn comments_disabled and ratings_disabled to 0s and 1s
+disabled_to_binary <- function(x) {
+  if (x == "True") {
+    return(1)
+  } else if (x == "False") {
+    return(0)
+  } else {
+    return(NULL)
+  }
+}
+
+yt$comments_disabled <- sapply(yt$comments_disabled, disabled_to_binary)
+yt$ratings_disabled <- sapply(yt$ratings_disabled, disabled_to_binary)
+
+#separating tags using commas, not |
+yt$tags <- gsub("\\|", ",", yt$tags)
+
+#adding the category name
+json_data <- fromJSON("data/US_category_id.json")
+
+category_id <- json_data$items$id
+category_name <- json_data$items$snippet$title
+category_identification <- data.frame(category_id, category_name)
+
+yt_new <- merge(yt, category_identification, by = "category_id", all.x = TRUE)
+yt_new$category_id <- NULL
+
+# replacing things with [None] and "" to NA
+yt_new$tags[yt_new$tags == "[None]"] <- NA
+yt_new$description[yt_new$description == ""] <- NA
+
+#getting rid of videos with 0 views
+yt_new <- yt_new[yt_new$views != 0, ]
+
+#get rid of top 3 highest viewed videos (fake views that automatically happened when discord opened)
+yt_new <- yt_new[yt_new$views < 628718636, ]
+
+#reordering columns to organize data better
+yt_new <- yt_new[c("video_id", "title", "channel_title", "category_name", "description", "tags", "views", "likes", "dislikes", "comments", "date_published", "date_trending", "comments_disabled", "ratings_disabled")]
+
+#naming the final cleaned data frame
+video_data <- yt_new
+
+```
+
+``` {r, "Unique Video Data.Frame"}
+# Create unique_video_data with video success metrics 
+
+#using dplyr and grouping by video_id to use aggregate functions and calculate success metrics
+unique_video_data <- video_data %>%
+  group_by(video_id) %>%
+  summarize(
+    
+    #character data
+    video_id = first(video_id),
+    title = first(title),
+    channel_title = first(channel_title),
+    category_name = first(category_name),
+    description = first(description),
+    tags = first(tags),
+    
+    #aggregated data
+    max_views = max(views, na.rm = TRUE),
+    max_likes = max(likes, na.rm = TRUE),
+    max_dislikes = max(dislikes, na.rm = TRUE),
+    max_comments = max(comments, na.rm = TRUE),
+    
+    #dates
+    date_published = first(date_published),
+    first_date_trending = min(date_trending),
+    last_date_trending = max(date_trending),
+    
+    #success metrics
+    days_until_trending = as.numeric(as.Date(min(date_trending, na.rm = TRUE)) - as.Date(min(date_published, na.rm = TRUE))),
+    trending_retention = as.numeric(max(date_trending, na.rm = TRUE) - min(date_trending, na.rm = TRUE)) + 1,
+    engagement_ratio = max((likes + comments) / views, na.rm = TRUE),
+    
+    #binary data
+    comments_disabled = first(comments_disabled),
+    ratings_disabled = first(ratings_disabled)
+  ) %>%
+  ungroup()
+
+```
+
+
+Project Limitations:
+```{r, "Limitations", echo = FALSE}
+cat(
+  " **Limitations**\n",
+  
+  "\n**Reccomendation Limitations:**\n",
+  "We began this project wanting to give reccomendations for creators on how to maximize their chances of reaching the trending page by emulating successful creators. However, through our analysis, we discovered that the data we had did not lend itself to those insights, as we only had data for videos that did reach the trending page. Becuase we were unable to compare against videos that reached the trending page and videos that hadn't, we were unable to give reccomendations for HOW to reach the trending page, only how to improve success ONCE you started trending.\n",
+  
+  "**Creator vs Company:**\n",
+  "There was no easy way to mass quantify whether a YouTube channel was operated by a company or an independent creator. While it was possible to manually classify the top 40 or 50 channels, this approach was not scalable for the entire dataset. Using the following code:\n",
+  "`creator_type = ifelse(grepl('Official|VEVO|Company|Media|Productions|Studio', channel_title, ignore.case = TRUE))`\n",
+  "had a high error rate, as it missed companies with acronyms or simpler names, such as NBA, SpaceX, and ESPN, and incorrectly classified independent creators who included terms like 'media' or 'Productions' in their channel name. A more accurate classification could be achieved by exploring the YouTube API to see if it offers internal flags or metadata to distinguish creator types. However, due to time constraints, only the top 50 successful YouTubers were manually classified, and it was not feasible to extend this classification to the entire dataset.\n",
+  
+  "\n**Hardware Limitations:**\n",
+  "The sentiment analysis and association mining processes placed significant strain on the computing resources. Several analyses took upwards of 20 to 30 minutes to run. In total, the execution time for the entire R Markdown (RMD) file was 32 minutes and 16 seconds. Due to our limited computational power, we were unable to expand this study past the US Trending data, despite the availability of data from other countries and regions. This constraint restricted the scope of the analysis, preventing a more global comparison of trends and metrics.\n",
+  
+  "\n**Future Enhancements:**\n",
+  "More sophisticated models, such as large language models (LLMs) or advanced natural language processing (NLP) techniques, could potentially provide deeper insights into different factors impacts on success metrics. These models could enhance the scalability and accuracy of the analysis moving forward, however, these models would require more powerful computing resources. Secondly, expanding our hardware capabilities to be able to handle data from either other regions or video data from the same time period / region that didn't reach the trending page would allow us to offer insights how HOW creators can maximize their trending potential and success. Unforuntatly, our hardware was pushed to the limits by this data alone, and expanding our analysis to include more data points was not/is not possible until we can increase out computing power.\n"
+)
+```

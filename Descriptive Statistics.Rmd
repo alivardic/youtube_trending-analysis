@@ -1,0 +1,387 @@
+---
+title: "Final Project"
+author: "Alina Hagen, Brodie Vancil"
+date: "`r Sys.Date()`"
+---
+## Data and Text Mining Final Project: Maximizing Success on YouTube's Trending Page: Content Optimization Strategies Based on Analysis of the Top 200 Videos Over the Last Four Years
+
+**Topic:** Success Factors on YouTube Trending Videos 
+
+**Question:** What are common trends among the top trending YouTube videos in the US, and how do different factors impact their success on the trending page?
+
+**Goal:** To analyze data from each day’s top 200 trending YouTube videos from August 2020 to
+April 2024 and identify success factors among the most successful videos in the U.S. This
+analysis will evaluate a video's success on the trending page based on the following success metrics:
+
+  - *Engagement Ratio:* The total audience interaction (sum of comments, likes, and
+  dislikes) relative to the view count as recorded on the final day the video appears on the
+  trending list (representing the highest engagement level captured in the dataset)
+  
+  - *Trending Speed:* How long a video took to reach the trending page
+  
+  - *Trending Retention:* How long a video remains on the trending page
+  
+---
+
+## Libraries
+``` {r, message = FALSE, warning = FALSE}
+
+# Libraries / Packages
+library(arules)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(grid)
+library(gridExtra)
+library(jsonlite)
+library(kableExtra)
+library(knitr)
+library(lubridate)
+library(purrr)
+library(reshape2)
+library(stringr)
+library(syuzhet)
+library(textdata)
+library(tidytext)
+library(tidyr)
+library(readr)
+
+```
+
+```{r}
+yt_new <- read_csv("data/cleaned_youtube_data.csv")
+```
+
+## Section 1.1 Descriptive Statistics
+Descriptive Statistics Fundamentals (See above, mean, median, mode, etc)
+``` {r, "DS.1"}
+descriptive_stats <- yt_new %>%
+  summarise(
+    total_videos = n(),
+    total_unique_videos = n_distinct(video_id),
+    total_views = sum(views, na.rm = TRUE),
+    mean_views = round(mean(views, na.rm = TRUE)),
+    median_views = median(views, na.rm = TRUE),
+    mode_views = as.numeric(names(sort(table(views), decreasing = TRUE)[1])),
+    mean_likes = round(mean(likes, na.rm = TRUE)),
+    median_likes = median(likes, na.rm = TRUE),
+    mode_likes = as.numeric(names(sort(table(likes), decreasing = TRUE)[1])),
+    mean_comments = round(mean(comments, na.rm = TRUE)),
+    median_comments = median(comments, na.rm = TRUE),
+    mode_comments = as.numeric(names(sort(table(comments), decreasing = TRUE)[1]))
+  )
+
+category_stats <- yt_new %>%
+  group_by(category_name) %>%
+  summarise(
+    total_videos = n(),
+    total_views = sum(views, na.rm = TRUE),
+    mean_views = round(mean(views, na.rm = TRUE)),
+    median_views = median(views, na.rm = TRUE),
+    mode_views = as.numeric(names(sort(table(views), decreasing = TRUE)[1])),
+    mean_likes = round(mean(likes, na.rm = TRUE)),
+    median_likes = median(likes, na.rm = TRUE),
+    mode_likes = as.numeric(names(sort(table(likes), decreasing = TRUE)[1])),
+    mean_comments = round(mean(comments, na.rm = TRUE)),
+    median_comments = median(comments, na.rm = TRUE),
+    mode_comments = as.numeric(names(sort(table(comments), decreasing = TRUE)[1]))
+  ) %>%
+  arrange(desc(total_videos))
+
+dataset_summary <- function(descriptive_stats, column_name) {
+  # Check which column is selected and retrieve the relevant statistics
+  if (column_name == "views") {
+    mean_value <- descriptive_stats$mean_views
+    median_value <- descriptive_stats$median_views
+    mode_value <- descriptive_stats$mode_views
+  } else if (column_name == "likes") {
+    mean_value <- descriptive_stats$mean_likes
+    median_value <- descriptive_stats$median_likes
+    mode_value <- descriptive_stats$mode_likes
+  } else if (column_name == "comments") {
+    mean_value <- descriptive_stats$mean_comments
+    median_value <- descriptive_stats$median_comments
+    mode_value <- descriptive_stats$mode_comments
+  } else {
+    stop("Invalid column name. Please choose 'views', 'likes', or 'comments'.")
+  }
+
+  # Extract common statistics
+  total_videos <- descriptive_stats$total_videos
+  total_views <- descriptive_stats$total_views
+  
+  # print summary
+  cat("**Dataset Summary for", column_name, "**\n")
+  cat("We looked at", total_videos, "videos in this dataset.\n")
+  cat("These videos collectively amassed", total_views, "views.\n")
+  cat("The average number of", column_name, "was", mean_value, 
+      "while the median was", median_value, ".\n")
+  cat("The most frequently occurring number of", column_name, "(mode) was", mode_value, ".\n")
+}
+
+```
+
+``` {r, echo = FALSE}
+# Print the summary
+cat("Entire Dataset Stats\n")
+dataset_summary(descriptive_stats, "views")
+dataset_summary(descriptive_stats, "likes")
+dataset_summary(descriptive_stats, "comments")
+
+cat("\n**Descriptive Statistics**\n")
+kable(descriptive_stats, caption = "Descriptive Statistics of YouTube Dataset") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:10, width = "2cm")
+
+kable(category_stats, caption = "Descriptive Statistics of YouTube Channel Categories") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:10, width = "2cm")
+
+cat("(Based on the US Trending Page from August 2020 - April 2024)")
+
+```
+
+## Section 1.2: Success Metrics Correlation
+Is there a correlation between engagement ratio, trending speed, and trending retention
+among trending YouTube videos?
+``` {r, "DS.2"}
+success_metrics <- unique_video_data %>%
+  select(engagement_ratio, days_until_trending, trending_retention) %>%
+  na.omit() # Remove rows with NA in these metrics
+
+cat("Number of valid rows for correlation analysis:", nrow(success_metrics), "\n")
+
+if (nrow(success_metrics) > 0) {
+  # Calculate the Correlation Matrix
+  correlation_matrix <- cor(success_metrics, use = "complete.obs")
+  print("Correlation Matrix:")
+  print(correlation_matrix)
+
+  # Explanation for Correlations
+  cat("\n**Success Metrics Correlation Analysis Explanation\n(According to the US Trending Page from August 2020 - April 2024)**\n\n")
+  
+  # Helper function to determine the strength of correlation
+  get_correlation_strength <- function(correlation_value) {
+    if (abs(correlation_value) < 0.2) {
+      return("Very Weak or No Correlation")
+    } else if (abs(correlation_value) < 0.4) {
+      return("Weak Correlation")
+    } else if (abs(correlation_value) < 0.6) {
+      return("Moderate Correlation")
+    } else if (abs(correlation_value) < 0.8) {
+      return("Strong Correlation")
+    } else {
+      return("Very Strong Correlation")
+    }
+  }
+  
+  # Engagement Ratio and Trending Speed
+  engagement_trending <- correlation_matrix["engagement_ratio", "days_until_trending"]
+  cat("- Engagement Ratio and Trending Speed: ", round(engagement_trending, 3), "\n")
+  cat("  - This correlation value suggests the nature and strength of the relationship between how engaged viewers are and how quickly a video trends.\n")
+  cat("    Strength of correlation: ", get_correlation_strength(engagement_trending), "\n\n")
+  
+  # Engagement Ratio and Trending Retention
+  engagement_retention <- correlation_matrix["engagement_ratio", "trending_retention"]
+  cat("- Engagement Ratio and Trending Retention: ", round(engagement_retention, 3), "\n")
+  cat("  - This value shows whether there is a relationship between viewer engagement and how long a video stays trending.\n")
+  cat("    Strength of correlation: ", get_correlation_strength(engagement_retention), "\n\n")
+  
+  # Trending Speed and Trending Retention
+  trending_retention_speed <- correlation_matrix["days_until_trending", "trending_retention"]
+  cat("- Trending Speed and Trending Retention: ", round(trending_retention_speed, 3), "\n")
+  cat("  - This indicates whether faster trending videos tend to stay trending for longer periods.\n")
+  cat("    Strength of correlation: ", get_correlation_strength(trending_retention_speed), "\n")
+  
+} else {
+  cat("No valid rows available for correlation analysis.\n")
+}
+
+```
+
+``` {r, echo = FALSE}
+cat("Based on the conclusions of the correlation analysis, none of the success metrics were found to have any correlation with one another. Meaning, just becuase a youtube video succeeeds in one metric, does not mean that that video will necessarily succeed in other metrics.")
+```
+
+## Section 1.3: Most Successful YouTubers in the US based on Trending Success
+Who are the most successful YouTubers in the United States, as determined by their total
+number of unique videos that have reached the trending page, cumulative time spent
+trending, and average success metrics? 
+``` {r, "DS.3"}
+successful_youtubers <- unique_video_data %>%
+  group_by(channel_title, category_name) %>%
+  summarise(
+    total_trending_videos = n(), 
+    total_time_trending = sum(trending_retention, na.rm = TRUE), 
+    avg_engagement_ratio = round(mean(engagement_ratio, na.rm = TRUE), 3), 
+    avg_trending_speed = round(mean(days_until_trending, na.rm = TRUE),), 
+    avg_trending_retention = round(mean(trending_retention, na.rm = TRUE),2),
+    avg_view_count = round(mean(max_views, na.rm = TRUE)) 
+  ) %>%
+  arrange(desc(total_trending_videos), desc(total_time_trending)) 
+
+#Display top 10 most successful categories
+top_youtubers <- head(successful_youtubers, 10)
+
+```
+
+``` {r, echo = FALSE}
+kable(top_youtubers, caption = "Top 10 Most Successful YouTubers:") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+```
+
+Are these independent creators or Companies?
+``` {r}
+# Manually Classifying Channels as Companies or Independent Creators
+# Criteria for Classification - Companies are officially owned channels, or YouTube channels that have grown into company / group based effort. If a YouTube channel has a team of people editing it, then it is classified as a Company
+# Originally I wanted to classify until I got to at least 10 Companies and 10 independents, but I got to 50 entries before I got to 10 independent creators, which is a conclusion in itself.
+manually_classified_creators <- successful_youtubers[1:50,]
+manually_classified_creators$creator_type <- c("Company", "Company", "Company", "Company", "Independent", "Independent", "Company", "Company", "Company", "Company", "Company", "Independent", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company","Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company","Company", "Company", "Company", "Company", "Company", "Company", "Independent", "Company", "Independent", "Company", "Company", "Independent", "Independent", "Company", "Company", "Company", "Company", "Company", "Company")
+
+creator_summary <- manually_classified_creators %>%
+  group_by(creator_type) %>%
+  summarise(
+    total_creators = n(),
+    avg_trending_videos = round(mean(total_trending_videos, na.rm = TRUE)),
+    avg_time_trending = round(mean(total_time_trending, na.rm = TRUE)),
+    avg_engagement_ratio = round(mean(avg_engagement_ratio, na.rm = TRUE),3)
+  )
+
+#Display the top 25 creators, but this time with Creator Classification
+manually_classified_creators <- manually_classified_creators[1:25,]
+```
+
+``` {r, echo = FALSE}
+kable(manually_classified_creators, caption = "Top 25 Most Successful YouTubers with Creator Classification:") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+kable(creator_summary, caption = "Independent Creators vs Companies Summary (Top 50 Creators)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:5, width = "2cm")
+```
+
+## Section 1.4: Most Successful Channel Categories in the US based on Trending Success
+What are the most successful channel categories in the United States, as determined by
+total number of unique videos that have reached the trending page, cumulative time spent
+trending, and average success metrics?
+``` {r, "DS.4"}
+successful_categories <- unique_video_data %>%
+  group_by(category_name,) %>%
+  summarise(
+    total_trending_videos = n(), 
+    total_time_trending = sum(trending_retention, na.rm = TRUE), 
+    avg_engagement_ratio = round(mean(engagement_ratio, na.rm = TRUE), 3),  
+    avg_trending_speed = round(mean(days_until_trending, na.rm = TRUE), 2), 
+    avg_trending_retention = round(mean(trending_retention, na.rm = TRUE), 2),
+    avg_view_count = round(mean(max_views, na.rm = TRUE)) 
+  ) %>%
+  arrange(desc(total_trending_videos), desc(total_time_trending)) 
+```
+
+``` {r, echo = FALSE}
+kable(successful_categories, caption = "Summary of Channel Category Success:") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:7, width = "2cm")
+```
+
+## Section 1.5: Descriptive Statistics Visualizations
+```{r, "DS.5"}
+category_metrics <- unique_video_data %>%
+  group_by(category_name) %>%
+  summarise(
+    total_trending_videos = n(),
+    avg_view_count = round(mean(max_views, na.rm = TRUE)),
+    avg_engagement_ratio = round(mean(engagement_ratio, na.rm = TRUE),3),
+    avg_trending_speed = round(mean(days_until_trending, na.rm = TRUE),2),
+    avg_trending_retention = round(mean(trending_retention, na.rm = TRUE),2),
+    total_time_trending = sum(trending_retention, na.rm = TRUE)
+  ) %>%
+  arrange(desc(total_trending_videos))
+
+#Visualization 1 Bar Chart for Category Dominance
+bar_chart <- ggplot(category_metrics, aes(x = reorder(category_name, total_trending_videos), y = total_trending_videos)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Category Dominance: Total Trending Videos by Category",
+    x = "Category Name",
+    y = "Total Trending Videos"
+  ) +
+  theme_minimal()
+print(bar_chart)
+cat("**Explanation**: This bar chart shows the total number of trending videos for each category, highlighting which categories dominate the trending page.\n\n")
+
+
+
+#Visualization 2 Grouped Bar Chart for Overall Success
+engagement_vs_views <- ggplot(category_metrics, aes(x = avg_engagement_ratio, y = avg_view_count, label = category_name)) +
+  geom_point(aes(size = total_trending_videos, color = total_time_trending), alpha = 0.8) +
+  scale_color_gradient(low = "blue", high = "red") +
+  geom_text_repel(size = 3) +
+  labs(
+    title = "Engagement Ratio vs. View Count by Category",
+    x = "Average Engagement Ratio",
+    y = "Average View Count",
+    size = "Total Trending Videos",
+    color = "Total Time Trending (Days)"
+  ) +
+  theme_minimal()
+
+print(engagement_vs_views)
+cat("**Explanation**: This scatter plot compares average engagement ratios and view counts for each category. Categories are sized by their total number of trending videos and colored by total time spent trending.\n\n")
+
+#Visualization 3 Boxplots
+ggplot(unique_video_data, aes(x = category_name, y = trending_retention)) +
+  geom_boxplot(fill = "darkolivegreen3", outlier.alpha = 0.3, outlier.color = "tomato3", outlier.size = 2) +
+  coord_flip() +
+  labs(
+    title = "Retention Trends: Time Spent Trending by Category",
+    x = "Category Name",
+    y = "Trending Retention (Days)"
+  ) +
+  theme_minimal()
+cat("**Explanation**: This boxplot shows the spread of time videos spend trending for each category, identifying categories with consistent or highly variable retention times.\n\n")
+
+
+ggplot(unique_video_data, aes(x = category_name, y = days_until_trending)) +
+  geom_boxplot(fill = "darkolivegreen3", outlier.alpha = 0.3, outlier.color = "tomato3", outlier.size = 2) +
+  coord_flip() +
+  labs(
+    title = "Speed Trends: Speed of Trending by Category",
+    x = "Category Name",
+    y = "Trending Speed (Days)"
+  ) +
+  theme_minimal()
+cat("**Explanation**: This boxplot shows the spread of the speed of videos reaching the trending page trending for each category, identifying categories with consistent or highly variable trending speed times.\n\n")
+
+
+ggplot(unique_video_data, aes(x = category_name, y = engagement_ratio)) +
+  geom_boxplot(fill = "darkolivegreen3", outlier.alpha = 0.3, outlier.color = "tomato3", outlier.size = 2) +
+  coord_flip() +
+  labs(
+    title = "Engagement Trends: Engagement with Trending Content by Category",
+    x = "Category Name",
+    y = "Enagement Ratio (likes + comments) / views"
+  ) +
+  theme_minimal()
+cat("**Explanation**: This boxplot shows the spread of engagement with trending content for each category, identifying categories with consistent or highly variable engagement ratios. ")
+```
+
+``` {r, "Final Descriptive Analysis Conclusions and Client Imporantance", echo = FALSE}
+cat("Understanding base descriptive statistics is key for YouTube creators looking to improve their trending success. Categories that have high average engagement ratios show that creating content that encourages interaction will help creators build loyal audiences that are very retentive, and allows those creators to enhance their visability on YouTube even if they don't have the most views or likes.\n ", 
+    "\nFor our team, these statistics were crucial as they formed the foundation for our sentiment and association analyses. They helped us interpret results more effectively and refine our categorization methods.")
+```

@@ -1,0 +1,1484 @@
+---
+title: "Final Project"
+author: "Group 1"
+date: "`r Sys.Date()`"
+output: html_document
+---
+## Data and Text Mining Final Project: Maximizing Success on YouTube's Trending Page: Content Optimization Strategies Based on Analysis of the Top 200 Videos Over the Last Four Years
+
+**Topic:** Success Factors on YouTube Trending Videos 
+
+**Question:** What are common trends among the top trending YouTube videos in the US, and how do different factors impact their success on the trending page?
+
+**Goal:** To analyze data from each day’s top 200 trending YouTube videos from August 2020 to
+April 2024 and identify success factors among the most successful videos in the U.S. This
+analysis will evaluate a video's success on the trending page based on the following success metrics:
+
+  - *Engagement Ratio:* The total audience interaction (sum of comments, likes, and
+  dislikes) relative to the view count as recorded on the final day the video appears on the
+  trending list (representing the highest engagement level captured in the dataset)
+  
+  - *Trending Speed:* How long a video took to reach the trending page
+  
+  - *Trending Retention:* How long a video remains on the trending page
+  
+---
+
+## Libraries
+``` {r, message = FALSE, warning = FALSE}
+
+# Libraries / Packages
+library(arules)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(grid)
+library(gridExtra)
+library(jsonlite)
+library(kableExtra)
+library(knitr)
+library(lubridate)
+library(purrr)
+library(reshape2)
+library(stringr)
+library(syuzhet)
+library(textdata)
+library(tidytext)
+library(tidyr)
+
+```
+
+## Data Processing, Cleaning, and Unique Video DF Creation
+```{r, "Data Processing and Cleaning", warning=FALSE}
+#loading in data
+yt <- read.csv("data/US_youtube_trending_data.csv")
+
+#get rid of columns we aren't using
+yt$channelId <- NULL
+yt$thumbnail_link <- NULL
+
+
+#normalize the column names
+colnames(yt) <- c("video_id", "title", "date_published", "channel_title", 
+                  "category_id", "date_trending", "tags", "views", "likes",
+                  "dislikes", "comments", "comments_disabled", "ratings_disabled",
+                  "description")
+
+
+#turn publishedAt and trending_date to date type
+yt$date_published <- ymd_hms(yt$date_published)
+yt$date_trending <- ymd_hms(yt$date_trending)
+
+
+#turn comments_disabled and ratings_disabled to 0s and 1s
+disabled_to_binary <- function(x) {
+  if (x == "True") {
+    return(1)
+  } else if (x == "False") {
+    return(0)
+  } else {
+    return(NULL)
+  }
+}
+
+yt$comments_disabled <- sapply(yt$comments_disabled, disabled_to_binary)
+yt$ratings_disabled <- sapply(yt$ratings_disabled, disabled_to_binary)
+
+#separating tags using commas, not |
+yt$tags <- gsub("\\|", ",", yt$tags)
+
+#adding the category name
+json_data <- fromJSON("data/US_category_id.json")
+
+category_id <- json_data$items$id
+category_name <- json_data$items$snippet$title
+category_identification <- data.frame(category_id, category_name)
+
+yt_new <- merge(yt, category_identification, by = "category_id", all.x = TRUE)
+yt_new$category_id <- NULL
+
+# replacing things with [None] and "" to NA
+yt_new$tags[yt_new$tags == "[None]"] <- NA
+yt_new$description[yt_new$description == ""] <- NA
+
+#getting rid of videos with 0 views
+yt_new <- yt_new[yt_new$views != 0, ]
+
+#get rid of top 3 highest viewed videos (fake views that automatically happened when discord opened)
+yt_new <- yt_new[yt_new$views < 628718636, ]
+
+#reordering columns to organize data better
+yt_new <- yt_new[c("video_id", "title", "channel_title", "category_name", "description", "tags", "views", "likes", "dislikes", "comments", "date_published", "date_trending", "comments_disabled", "ratings_disabled")]
+
+#naming the final cleaned data frame
+video_data <- yt_new
+
+```
+
+``` {r, "Unique Video Data.Frame"}
+# Create unique_video_data with video success metrics 
+
+#using dplyr and grouping by video_id to use aggregate functions and calculate success metrics
+unique_video_data <- video_data %>%
+  group_by(video_id) %>%
+  summarize(
+    
+    #character data
+    video_id = first(video_id),
+    title = first(title),
+    channel_title = first(channel_title),
+    category_name = first(category_name),
+    description = first(description),
+    tags = first(tags),
+    
+    #aggregated data
+    max_views = max(views, na.rm = TRUE),
+    max_likes = max(likes, na.rm = TRUE),
+    max_dislikes = max(dislikes, na.rm = TRUE),
+    max_comments = max(comments, na.rm = TRUE),
+    
+    #dates
+    date_published = first(date_published),
+    first_date_trending = min(date_trending),
+    last_date_trending = max(date_trending),
+    
+    #success metrics
+    days_until_trending = as.numeric(as.Date(min(date_trending, na.rm = TRUE)) - as.Date(min(date_published, na.rm = TRUE))),
+    trending_retention = as.numeric(max(date_trending, na.rm = TRUE) - min(date_trending, na.rm = TRUE)) + 1,
+    engagement_ratio = max((likes + comments) / views, na.rm = TRUE),
+    
+    #binary data
+    comments_disabled = first(comments_disabled),
+    ratings_disabled = first(ratings_disabled)
+  ) %>%
+  ungroup()
+
+```
+
+## Section 1.1 Descriptive Statistics
+Descriptive Statistics Fundamentals (See above, mean, median, mode, etc)
+``` {r, "DS.1"}
+descriptive_stats <- yt_new %>%
+  summarise(
+    total_videos = n(),
+    total_unique_videos = n_distinct(video_id),
+    total_views = sum(views, na.rm = TRUE),
+    mean_views = round(mean(views, na.rm = TRUE)),
+    median_views = median(views, na.rm = TRUE),
+    mode_views = as.numeric(names(sort(table(views), decreasing = TRUE)[1])),
+    mean_likes = round(mean(likes, na.rm = TRUE)),
+    median_likes = median(likes, na.rm = TRUE),
+    mode_likes = as.numeric(names(sort(table(likes), decreasing = TRUE)[1])),
+    mean_comments = round(mean(comments, na.rm = TRUE)),
+    median_comments = median(comments, na.rm = TRUE),
+    mode_comments = as.numeric(names(sort(table(comments), decreasing = TRUE)[1]))
+  )
+
+category_stats <- yt_new %>%
+  group_by(category_name) %>%
+  summarise(
+    total_videos = n(),
+    total_views = sum(views, na.rm = TRUE),
+    mean_views = round(mean(views, na.rm = TRUE)),
+    median_views = median(views, na.rm = TRUE),
+    mode_views = as.numeric(names(sort(table(views), decreasing = TRUE)[1])),
+    mean_likes = round(mean(likes, na.rm = TRUE)),
+    median_likes = median(likes, na.rm = TRUE),
+    mode_likes = as.numeric(names(sort(table(likes), decreasing = TRUE)[1])),
+    mean_comments = round(mean(comments, na.rm = TRUE)),
+    median_comments = median(comments, na.rm = TRUE),
+    mode_comments = as.numeric(names(sort(table(comments), decreasing = TRUE)[1]))
+  ) %>%
+  arrange(desc(total_videos))
+
+dataset_summary <- function(descriptive_stats, column_name) {
+  # Check which column is selected and retrieve the relevant statistics
+  if (column_name == "views") {
+    mean_value <- descriptive_stats$mean_views
+    median_value <- descriptive_stats$median_views
+    mode_value <- descriptive_stats$mode_views
+  } else if (column_name == "likes") {
+    mean_value <- descriptive_stats$mean_likes
+    median_value <- descriptive_stats$median_likes
+    mode_value <- descriptive_stats$mode_likes
+  } else if (column_name == "comments") {
+    mean_value <- descriptive_stats$mean_comments
+    median_value <- descriptive_stats$median_comments
+    mode_value <- descriptive_stats$mode_comments
+  } else {
+    stop("Invalid column name. Please choose 'views', 'likes', or 'comments'.")
+  }
+
+  # Extract common statistics
+  total_videos <- descriptive_stats$total_videos
+  total_views <- descriptive_stats$total_views
+  
+  # print summary
+  cat("**Dataset Summary for", column_name, "**\n")
+  cat("We looked at", total_videos, "videos in this dataset.\n")
+  cat("These videos collectively amassed", total_views, "views.\n")
+  cat("The average number of", column_name, "was", mean_value, 
+      "while the median was", median_value, ".\n")
+  cat("The most frequently occurring number of", column_name, "(mode) was", mode_value, ".\n")
+}
+
+```
+
+``` {r, echo = FALSE}
+# Print the summary
+cat("Entire Dataset Stats\n")
+dataset_summary(descriptive_stats, "views")
+dataset_summary(descriptive_stats, "likes")
+dataset_summary(descriptive_stats, "comments")
+
+cat("\n**Descriptive Statistics**\n")
+kable(descriptive_stats, caption = "Descriptive Statistics of YouTube Dataset") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:10, width = "2cm")
+
+kable(category_stats, caption = "Descriptive Statistics of YouTube Channel Categories") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:10, width = "2cm")
+
+cat("(Based on the US Trending Page from August 2020 - April 2024)")
+
+```
+
+## Section 1.2: Success Metrics Correlation
+Is there a correlation between engagement ratio, trending speed, and trending retention
+among trending YouTube videos?
+``` {r, "DS.2"}
+success_metrics <- unique_video_data %>%
+  select(engagement_ratio, days_until_trending, trending_retention) %>%
+  na.omit() # Remove rows with NA in these metrics
+
+cat("Number of valid rows for correlation analysis:", nrow(success_metrics), "\n")
+
+if (nrow(success_metrics) > 0) {
+  # Calculate the Correlation Matrix
+  correlation_matrix <- cor(success_metrics, use = "complete.obs")
+  print("Correlation Matrix:")
+  print(correlation_matrix)
+
+  # Explanation for Correlations
+  cat("\n**Success Metrics Correlation Analysis Explanation\n(According to the US Trending Page from August 2020 - April 2024)**\n\n")
+  
+  # Helper function to determine the strength of correlation
+  get_correlation_strength <- function(correlation_value) {
+    if (abs(correlation_value) < 0.2) {
+      return("Very Weak or No Correlation")
+    } else if (abs(correlation_value) < 0.4) {
+      return("Weak Correlation")
+    } else if (abs(correlation_value) < 0.6) {
+      return("Moderate Correlation")
+    } else if (abs(correlation_value) < 0.8) {
+      return("Strong Correlation")
+    } else {
+      return("Very Strong Correlation")
+    }
+  }
+  
+  # Engagement Ratio and Trending Speed
+  engagement_trending <- correlation_matrix["engagement_ratio", "days_until_trending"]
+  cat("- Engagement Ratio and Trending Speed: ", round(engagement_trending, 3), "\n")
+  cat("  - This correlation value suggests the nature and strength of the relationship between how engaged viewers are and how quickly a video trends.\n")
+  cat("    Strength of correlation: ", get_correlation_strength(engagement_trending), "\n\n")
+  
+  # Engagement Ratio and Trending Retention
+  engagement_retention <- correlation_matrix["engagement_ratio", "trending_retention"]
+  cat("- Engagement Ratio and Trending Retention: ", round(engagement_retention, 3), "\n")
+  cat("  - This value shows whether there is a relationship between viewer engagement and how long a video stays trending.\n")
+  cat("    Strength of correlation: ", get_correlation_strength(engagement_retention), "\n\n")
+  
+  # Trending Speed and Trending Retention
+  trending_retention_speed <- correlation_matrix["days_until_trending", "trending_retention"]
+  cat("- Trending Speed and Trending Retention: ", round(trending_retention_speed, 3), "\n")
+  cat("  - This indicates whether faster trending videos tend to stay trending for longer periods.\n")
+  cat("    Strength of correlation: ", get_correlation_strength(trending_retention_speed), "\n")
+  
+} else {
+  cat("No valid rows available for correlation analysis.\n")
+}
+
+```
+
+``` {r, echo = FALSE}
+cat("Based on the conclusions of the correlation analysis, none of the success metrics were found to have any correlation with one another. Meaning, just becuase a youtube video succeeeds in one metric, does not mean that that video will necessarily succeed in other metrics.")
+```
+
+## Section 1.3: Most Successful YouTubers in the US based on Trending Success
+Who are the most successful YouTubers in the United States, as determined by their total
+number of unique videos that have reached the trending page, cumulative time spent
+trending, and average success metrics? 
+``` {r, "DS.3"}
+successful_youtubers <- unique_video_data %>%
+  group_by(channel_title, category_name) %>%
+  summarise(
+    total_trending_videos = n(), 
+    total_time_trending = sum(trending_retention, na.rm = TRUE), 
+    avg_engagement_ratio = round(mean(engagement_ratio, na.rm = TRUE), 3), 
+    avg_trending_speed = round(mean(days_until_trending, na.rm = TRUE),), 
+    avg_trending_retention = round(mean(trending_retention, na.rm = TRUE),2),
+    avg_view_count = round(mean(max_views, na.rm = TRUE)) 
+  ) %>%
+  arrange(desc(total_trending_videos), desc(total_time_trending)) 
+
+#Display top 10 most successful categories
+top_youtubers <- head(successful_youtubers, 10)
+
+```
+
+``` {r, echo = FALSE}
+kable(top_youtubers, caption = "Top 10 Most Successful YouTubers:") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+```
+
+Are these independent creators or Companies?
+``` {r}
+# Manually Classifying Channels as Companies or Independent Creators
+# Criteria for Classification - Companies are officially owned channels, or YouTube channels that have grown into company / group based effort. If a YouTube channel has a team of people editing it, then it is classified as a Company
+# Originally I wanted to classify until I got to at least 10 Companies and 10 independents, but I got to 50 entries before I got to 10 independent creators, which is a conclusion in itself.
+manually_classified_creators <- successful_youtubers[1:50,]
+manually_classified_creators$creator_type <- c("Company", "Company", "Company", "Company", "Independent", "Independent", "Company", "Company", "Company", "Company", "Company", "Independent", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company","Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company", "Company","Company", "Company", "Company", "Company", "Company", "Company", "Independent", "Company", "Independent", "Company", "Company", "Independent", "Independent", "Company", "Company", "Company", "Company", "Company", "Company")
+
+creator_summary <- manually_classified_creators %>%
+  group_by(creator_type) %>%
+  summarise(
+    total_creators = n(),
+    avg_trending_videos = round(mean(total_trending_videos, na.rm = TRUE)),
+    avg_time_trending = round(mean(total_time_trending, na.rm = TRUE)),
+    avg_engagement_ratio = round(mean(avg_engagement_ratio, na.rm = TRUE),3)
+  )
+
+#Display the top 25 creators, but this time with Creator Classification
+manually_classified_creators <- manually_classified_creators[1:25,]
+```
+
+``` {r, echo = FALSE}
+kable(manually_classified_creators, caption = "Top 25 Most Successful YouTubers with Creator Classification:") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+kable(creator_summary, caption = "Independent Creators vs Companies Summary (Top 50 Creators)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:5, width = "2cm")
+```
+
+## Section 1.4: Most Successful Channel Categories in the US based on Trending Success
+What are the most successful channel categories in the United States, as determined by
+total number of unique videos that have reached the trending page, cumulative time spent
+trending, and average success metrics?
+``` {r, "DS.4"}
+successful_categories <- unique_video_data %>%
+  group_by(category_name,) %>%
+  summarise(
+    total_trending_videos = n(), 
+    total_time_trending = sum(trending_retention, na.rm = TRUE), 
+    avg_engagement_ratio = round(mean(engagement_ratio, na.rm = TRUE), 3),  
+    avg_trending_speed = round(mean(days_until_trending, na.rm = TRUE), 2), 
+    avg_trending_retention = round(mean(trending_retention, na.rm = TRUE), 2),
+    avg_view_count = round(mean(max_views, na.rm = TRUE)) 
+  ) %>%
+  arrange(desc(total_trending_videos), desc(total_time_trending)) 
+```
+
+``` {r, echo = FALSE}
+kable(successful_categories, caption = "Summary of Channel Category Success:") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:7, width = "2cm")
+```
+
+## Section 1.5: Descriptive Statistics Visualizations
+```{r, "DS.5"}
+category_metrics <- unique_video_data %>%
+  group_by(category_name) %>%
+  summarise(
+    total_trending_videos = n(),
+    avg_view_count = round(mean(max_views, na.rm = TRUE)),
+    avg_engagement_ratio = round(mean(engagement_ratio, na.rm = TRUE),3),
+    avg_trending_speed = round(mean(days_until_trending, na.rm = TRUE),2),
+    avg_trending_retention = round(mean(trending_retention, na.rm = TRUE),2),
+    total_time_trending = sum(trending_retention, na.rm = TRUE)
+  ) %>%
+  arrange(desc(total_trending_videos))
+
+#Visualization 1 Bar Chart for Category Dominance
+bar_chart <- ggplot(category_metrics, aes(x = reorder(category_name, total_trending_videos), y = total_trending_videos)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Category Dominance: Total Trending Videos by Category",
+    x = "Category Name",
+    y = "Total Trending Videos"
+  ) +
+  theme_minimal()
+print(bar_chart)
+cat("**Explanation**: This bar chart shows the total number of trending videos for each category, highlighting which categories dominate the trending page.\n\n")
+
+
+
+#Visualization 2 Grouped Bar Chart for Overall Success
+engagement_vs_views <- ggplot(category_metrics, aes(x = avg_engagement_ratio, y = avg_view_count, label = category_name)) +
+  geom_point(aes(size = total_trending_videos, color = total_time_trending), alpha = 0.8) +
+  scale_color_gradient(low = "blue", high = "red") +
+  geom_text_repel(size = 3) +
+  labs(
+    title = "Engagement Ratio vs. View Count by Category",
+    x = "Average Engagement Ratio",
+    y = "Average View Count",
+    size = "Total Trending Videos",
+    color = "Total Time Trending (Days)"
+  ) +
+  theme_minimal()
+
+print(engagement_vs_views)
+cat("**Explanation**: This scatter plot compares average engagement ratios and view counts for each category. Categories are sized by their total number of trending videos and colored by total time spent trending.\n\n")
+
+#Visualization 3 Boxplots
+ggplot(unique_video_data, aes(x = category_name, y = trending_retention)) +
+  geom_boxplot(fill = "darkolivegreen3", outlier.alpha = 0.3, outlier.color = "tomato3", outlier.size = 2) +
+  coord_flip() +
+  labs(
+    title = "Retention Trends: Time Spent Trending by Category",
+    x = "Category Name",
+    y = "Trending Retention (Days)"
+  ) +
+  theme_minimal()
+cat("**Explanation**: This boxplot shows the spread of time videos spend trending for each category, identifying categories with consistent or highly variable retention times.\n\n")
+
+
+ggplot(unique_video_data, aes(x = category_name, y = days_until_trending)) +
+  geom_boxplot(fill = "darkolivegreen3", outlier.alpha = 0.3, outlier.color = "tomato3", outlier.size = 2) +
+  coord_flip() +
+  labs(
+    title = "Speed Trends: Speed of Trending by Category",
+    x = "Category Name",
+    y = "Trending Speed (Days)"
+  ) +
+  theme_minimal()
+cat("**Explanation**: This boxplot shows the spread of the speed of videos reaching the trending page trending for each category, identifying categories with consistent or highly variable trending speed times.\n\n")
+
+
+ggplot(unique_video_data, aes(x = category_name, y = engagement_ratio)) +
+  geom_boxplot(fill = "darkolivegreen3", outlier.alpha = 0.3, outlier.color = "tomato3", outlier.size = 2) +
+  coord_flip() +
+  labs(
+    title = "Engagement Trends: Engagement with Trending Content by Category",
+    x = "Category Name",
+    y = "Enagement Ratio (likes + comments) / views"
+  ) +
+  theme_minimal()
+cat("**Explanation**: This boxplot shows the spread of engagement with trending content for each category, identifying categories with consistent or highly variable engagement ratios. ")
+```
+
+``` {r, "Final Descriptive Analysis Conclusions and Client Imporantance", echo = FALSE}
+cat("Understanding base descriptive statistics is key for YouTube creators looking to improve their trending success. Categories that have high average engagement ratios show that creating content that encourages interaction will help creators build loyal audiences that are very retentive, and allows those creators to enhance their visability on YouTube even if they don't have the most views or likes.\n ", 
+    "\nFor our team, these statistics were crucial as they formed the foundation for our sentiment and association analyses. They helped us interpret results more effectively and refine our categorization methods.")
+```
+
+
+## Section 2.1: Sentiment Analysis
+Due to data constraints, we used the video description to determine a video's overall sentiment. While this method provided valuable insights into how a video's sentiment impacts video success, it is a limitation, as video descriptions may not full repersent the overall emotional tone of the entire video.
+
+---
+
+What are the average success metrics depending on video's dominant sentiments?
+```{r, "SA.1", warning=FALSE}
+yt_new_description <- tibble(text = str_to_lower(unique_video_data$description)) 
+
+#replace NA
+yt_new_description[is.na(yt_new_description)] <- ""
+
+#find the emotions based on description
+emotions <- get_nrc_sentiment(yt_new_description$text)#find the emotions per entry
+
+yt_new_description <- cbind(yt_new_description, emotions) #merges emotions table with description dataframe
+
+# Summarize the number of items (count) per emotion column
+emo_sum <- emotions %>%
+  summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  pivot_longer(everything(), names_to = "emotion", values_to = "count")
+
+yt_new_description <- cbind(unique_video_data, yt_new_description) 
+yt_new_description <- yt_new_description[,-5] # Delete the original Description column
+```
+
+``` {r, "SA.1 - Plots"}
+# Calculate average success metrics by dominant sentiment
+yt_new_description$dominant_sentiment <- apply(emotions, 1, function(x) {
+  max_value <- max(x)
+  if (max_value == 0) {
+    return("no sentiment/\nno description")
+  } else {
+    return(names(x)[which.max(x)])
+  }
+})
+
+average_description_sentiment <- yt_new_description %>%
+  group_by(dominant_sentiment) %>%
+  summarise(
+    total_videos = n(),
+    avg_trending_speed = round(mean(days_until_trending),2),
+    avg_trending_retention = round(mean(trending_retention),2),
+    avg_engagement_ratio = round(mean(engagement_ratio), 3)
+  ) %>%
+  arrange(desc(total_videos))
+
+#Count of Emotional Elements in Video Descriptions
+ggplot(emo_sum, aes(x = reorder(emotion, -count), y = count)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Count of Emotional Elements in Video Descriptions", x = "Sentiment", y = "Count")
+
+#Distribution of Dominant Sentiments across Trending Videos 
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -total_videos), y = total_videos)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Distribution of Dominant Sentiments in Trending Videos", x = "Sentiment", y = "Count")
+
+# Average views by dominant sentiment
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -avg_trending_speed), y = avg_trending_speed)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Average Trending Speed by Dominant Sentiment", x = "Sentiment", y = "Trending Speed (Days)")
+
+# Average likes by dominant sentiment
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -avg_trending_retention), y = avg_trending_retention)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Average Trending Retention by Dominant Sentiment", x = "Sentiment", y = "Trending TRetention (Days)")
+
+# Average comments by dominant sentiment
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -avg_engagement_ratio), y = avg_engagement_ratio)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Average Engagement Ratio by Dominant Sentiment", x = "Sentiment", y = "Engagement Ration ( (likes + comments) / views)")
+```
+
+``` {r, echo = FALSE}
+# Print the average metrics
+kable(average_description_sentiment, caption = "Dominant Sentiment Average Success Metrics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:4, width = "2cm")
+```
+
+``` {r, echo = FALSE}
+cat(
+  "\n**Dominant Sentiments and Success Metrics**\n",
+  
+  "The bar charts presented help visualize the distribution of dominant sentiments across all videos in this dataset (N = 47,124 unique videos), as well as the average success metrics across different dominant sentiments. One of the most surprising observations was the apparent uniformity across sentiments in terms of trending success. \n",
+  
+  "Initially, it was hypothesized that videos with more negative or anger-driven sentiments would stand out, resulting in longer trending retention, quicker trending times, or, at the very least, more engagement. This hypothesis was grounded in the common phenomenon of 'rage-bait' videos—those designed to provoke strong emotional reactions and drive more interactions through upsetting or controversial topics. These videos often capitalize on emotional engagement to boost their traction. \n",
+  
+  "However, as shown in the data, no substantial differences were found between the dominant sentiment expressed in the video description and the video's actual performance on the trending page. This finding challenges the assumption that videos with certain emotional tones would inherently perform better or worse. In the next section, we will statistically test these trends to confirm whether the metrics are as similar as they appear. Nevertheless, the lack of a clear relationship between sentiment and success was unexpected and intriguing.\n"
+)
+```
+
+## Section 2.2: Dominant Sentiment Correlation with Success
+Do video sentiments have a statistically significant impact on success metrics? (T-Test /
+ANOVA hypothesis test)
+``` {r, echo = FALSE}
+cat("\n**ANOVA Hypothese:**\n Null Hypothesis (H0): There is no significane difference in success metrics between dominant sentiments.\nAlternative Hypothesis (H1): There is significane difference in success metrics between dominant sentiments. ")
+```
+
+```{r, "SA.2"}
+
+#Engagement Ratio ANOVA
+engage_aov <- aov(engagement_ratio ~ dominant_sentiment, data = yt_new_description)
+summary(engage_aov)
+# Get residuals from the ANOVA model
+residuals <- residuals(engage_aov)
+# Q-Q plot to check normality visually
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+#Trending Speed ANOVA
+speed_aov <- aov(days_until_trending ~ dominant_sentiment, data = yt_new_description)
+summary(speed_aov)
+# Get residuals from the ANOVA model
+residuals <- residuals(speed_aov)
+# Q-Q plot to check normality visually
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+#Trending Retention ANOVA
+retention_aov <- aov(trending_retention ~ dominant_sentiment, data = yt_new_description)
+summary(retention_aov)
+# Get residuals from the ANOVA model
+residuals <- residuals(retention_aov)
+# Q-Q plot to check normality visually
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+```
+
+``` {r, echo = FALSE}
+cat("**ANOVA Results:**\n
+While the ANOVA results suggest that dominant sentiments in a video's written description might have a statistically significant impact on success metrics, the Quantile-Quantile (Q-Q) plot shows that the residuals don’t follow a normal distribution. This means that the normality assumption for ANOVA is violated, which makes the results less reliable. It’s possible that the significance we found is due to this assumption being violated, which could lead to a higher chance of false positives (Type I error). Because of this, we can’t confidently comment on how the dominant sentiments in a video's written description impact success metrics based on the ANOVA results alone, and we can’t draw a clear conclusion within the scope of this project.\n\n
+To get more reliable results in the future, other methods could be used. For example, we could try machine learning tools like Large Language Models (LLMs) to analyze sentiments in more detail or use generalized linear models (GLMs), which don’t require normality. Non-parametric tests like the Kruskal-Wallis test could also help since they don’t rely on the same assumptions. Additionally, advanced natural language processing (NLP) techniques, like topic modeling or multi-dimensional sentiment analysis, could give us a deeper understanding of how sentiment might relate to success metrics. Exploring these tools in a future project could lead to stronger and more reliable findings.\n\n
+That being said, while we cannot comment on Dominant Sentiment's impact on success metrics, we can offer some insights into most common sentiments across both trendings videos as a whole and within each channel category")
+```
+
+## Section 2.3: Dominant Sentiment Frequency 
+Are trending videos more commonly positive, negative, or associated with other
+emotions?
+```{r, "SA.3"}
+video_sentiment_counts <- yt_new_description %>%
+  group_by(dominant_sentiment) %>%
+  summarise(
+    video_count = n()
+  )%>%
+  arrange(desc(video_count)) %>%
+  slice_max(order_by = video_count, n = 5)
+```
+
+``` {r, echo = FALSE}
+kable(video_sentiment_counts, caption = "Dominant Sentiment Seen on the Trending Page") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2, width = "2cm")
+```
+
+``` {r, echo = FALSE}
+cat("The top 5 most common sentiments expressed in video descriptions in this dataset were positive, anticipation, negavtive, trust, and no sentiment/no \n")
+```
+
+## Section 2.4: Dominant Sentiment per Channel Category
+Do trending videos in certain channel categories lean to specific sentiments?
+```{r, "SA.4"}
+category_sentiment_counts <- yt_new_description %>%
+  group_by(category_name, dominant_sentiment) %>%
+  summarise(
+    video_count = n()
+  )%>%
+  slice_max(order_by = video_count, n = 2) %>%
+  arrange(category_name, desc(video_count)) 
+```
+
+``` {r, echo = FALSE}
+kable(category_sentiment_counts, caption = "Top 2 Dominant Sentiments per Channel Cateogry") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:3, width = "2cm")
+```
+
+``` {r, echo = FALSE}
+cat("Suprisingly, all 15 categories of channels had the most prominent sentiment be positivity. After positive sentiments, the next most common sentiments expressed where anticipation (Autos & Vehicles, Comedy, Education, Entertainment, Film & Animation, Howto & Style, News & Politics, Nonprofits & Activism, People & Blogs, Pets & Animals, Science & Technology, Sports, Travel & Events), Negative (Gaming), and Joy (Music) \n")
+```
+
+## Section 2.5: Sentiment Analysis Conclusions 
+What are the overall sentiments of each Unique Video in the dataset? (Add Output to
+Unique.Video_DF) What are the conclusions from the Sentiment Analysis?
+```{r, "SA.6"}
+# Add Overall Video Sentiment to Unique.video_df
+unique_video_data$dominant_sentiment <- yt_new_description$dominant_sentiment
+```
+
+``` {r, echo = FALSE}
+cat("The analysis of dominant sentiments of YouTube videos revealed no significant relationship between sentiment and trending success, contrary to initial expectations. While the ANOVA results suggested significance of sentiment impact on success metrics, violations of the normality assumption raised concerns about the reliability of these findings. Despite hypotheses suggesting that negative or anger-driven sentiments might lead to longer trending times or higher engagement, the data showed uniformity across sentiment types, indicating that sentiment may not drastically affect a video's performance once it reaches the trending page.\n",
+
+"\nHowever, the statistics did indicate that positively focused content made up the vast majority of videos, accounting for just under half of all videos that reached the US trending page between August 2020 and April 2024 (21,246 out of 47,124 videos). This suggests that videos with more positive subject matter are more likely to make it to the trending page. Once a video is trending, however, the dominant sentiment appears to have questionable impact on its ongoing success that would require more sophisticated machine learning techniques to uncover. For now, we will conclude that dominant sentiment has little effect on the success metrics of trending videos.\n", 
+
+"\nBased on our analysis, we recommend that our clients do not focus on tailoring content to specific emotional tones in an attempt to improve success. Our findings show that the dominant sentiment expressed in a video does not have a significant impact on its ability to trend or achieve higher success metrics. Therefore, creators should prioritize other factors, such as content quality and community engagement, rather than trying to cater to particular emotional themes."
+)
+```
+
+
+## Section 3.1: Association Mining Data Prep
+The arules algorithm works best with categorical data, therefore, for this section of the project, success metrics had to be classified into categorical values to enable meaningful association mining. This analysis used Tertile-Based Categorization due to the large amount of outliers identified in each success metric in Section 1.5
+``` {r, echo = FALSE}
+cat(
+  "'Good' represents top-performing metrics, 'Mid' represents mixed success, and 'Poor' represents low performance.\n", 
+  "\nFor each of the success metrics, the following guidelines are used:\n",
+  "- 'days_until_trending': The lower this metric, the better. A shorter time to trend is preferred.\n",
+  "- 'trending_retention': The higher this metric, the better. Videos that remain trending for a longer period are more successful.\n",
+  "- 'engagement_ratio': The higher this metric, the better. High engagement indicates better viewer interaction.\n",
+  "\nTo calculate the overall success of each video relative to the dataset, all success metrics are normalized and then an equally weighted sum is computed. This aggregate score allows for the classification of videos based on their overall performance and can be used to identify associations between various factors and overall success.\n",
+  "\n**Note**: It should be noted that while some videos are categorized as having 'Poor' success, all videos in this dataset did reach the YouTube Trending page. Therefore, the 'Poor' success classification is relative to other successful trending videos and does not imply failure to trend."
+)
+```
+
+``` {r, "AM.Data Prep and Function Creation"}
+# Determining what the cutoffs for the Tertitle categorization
+tertile_cutoffs_speed <- quantile(unique_video_data$days_until_trending, probs = c(0, 1/3, 2/3, 1))
+print(tertile_cutoffs_speed)
+
+tertile_cutoffs_reten <- quantile(unique_video_data$trending_retention, probs = c(0, 1/3, 2/3, 1))
+print(tertile_cutoffs_reten)
+
+tertile_cutoffs_engage <- quantile(unique_video_data$engagement_ratio, probs = c(0, 1/3, 2/3, 1))
+print(tertile_cutoffs_engage)
+
+
+arules_df <- unique_video_data %>%
+  mutate(
+    # Create categories based on Tertiles
+    days_until_trending_category = ntile(days_until_trending, 3),
+    trending_retention_category = ntile(trending_retention, 3),
+    engagement_ratio_category = ntile(engagement_ratio, 3),
+    
+    # Recode categories into descriptive labels
+    days_until_trending_category = case_when(
+      days_until_trending_category == 1 ~ "Good",
+      days_until_trending_category == 2 ~ "Mid", 
+      days_until_trending_category == 3 ~ "Poor"),
+    trending_retention_category = case_when(
+      trending_retention_category == 1 ~ "Poor", 
+      trending_retention_category == 2 ~ "Mid", 
+      trending_retention_category == 3 ~ "Good"),
+    engagement_ratio_category = case_when(
+      engagement_ratio_category == 1 ~ "Poor", 
+      engagement_ratio_category == 2 ~ "Mid", 
+      engagement_ratio_category == 3 ~ "Good"),
+    
+    # Normalize the metrics
+    days_until_trending_scaled = (1 - (days_until_trending / 
+                                        max(days_until_trending, na.rm = TRUE))),
+    trending_retention_scaled = (trending_retention / max(trending_retention, na.rm = TRUE)),
+    engagement_ratio_scaled = (engagement_ratio / max(engagement_ratio, na.rm = TRUE)),
+    
+    # Calculate success score into a single variable, giving equal weight to all success metrics
+    success_score = (1/3) * days_until_trending_scaled + 
+                    (1/3) * trending_retention_scaled + 
+                    (1/3) * engagement_ratio_scaled
+  ) %>%
+  mutate(
+    # Categorize overall success based on the success score
+    overall_success = ntile(success_score, 3),
+    overall_success = case_when(
+      overall_success == 1 ~ "Poor",
+      overall_success == 2 ~ "Mid", 
+      overall_success == 3 ~ "Good")
+  )
+
+
+# Initialize the final rules tables data.frame
+Good.rules_table <- data.frame( 
+  rules =character(),
+  support = numeric(),
+  confidence = numeric(),
+  coverage = numeric(),
+  lift = numeric(),
+  count = integer()
+)[0, ]
+
+Poor.rules_table <- data.frame( 
+  rules =character(),
+  support = numeric(),
+  confidence = numeric(),
+  coverage = numeric(),
+  lift = numeric(),
+  count = integer()
+)[0, ]
+
+# Intialize a function to facilitate rules plotting
+am_plot <- function(df1, df2, metric, eval1, eval2, test) {
+  a <- min(df1$support, df2$support)
+  b = max(df1$support, df2$support)
+   
+  c <- min(df1$lift, df2$lift)
+  d <- max(df1$lift, df2$lift)
+  
+  p1 <- ggplot(df1, aes(x = support, y = lift, color = confidence)) +
+    geom_point(size = 8, alpha = 0.75) +  # Adjusted size for better visualization
+    scale_color_gradient2(low = "tomato3", mid = "tan1", high = "darkolivegreen3", 
+                          midpoint = 0.6, name = "Confidence") + 
+    theme_light() +
+    labs(
+      x = "Support",
+      y = "Lift",
+      subtitle = paste("Where", metric,  "=", eval1)) +
+    xlim(a,b) + ylim(c,d)
+  
+  p2 <- ggplot(df2, aes(x = support, y = lift, color = confidence)) +
+    geom_point(size = 8, alpha = 0.75) +  # Adjusted size for better visualization
+    scale_color_gradient2(low = "tomato3", mid = "tan1", high = "darkolivegreen3", 
+                          midpoint = 0.6, name = "Confidence") + 
+    theme_light() +
+    labs(
+      x = "Support",
+      y = "Lift",
+      subtitle = paste("Where", metric,  "=", eval2)) +
+    xlim(a,b) + ylim(c,d)
+  
+  p <- grid.arrange(
+    p1, p2, 
+    ncol = 2,
+    top = textGrob(paste("Association Mining on Youtube Trending", test))
+    )
+ 
+  return(p)
+}
+
+# Initialize a function to clean the outputted rules tables
+clean_rules_tables <- function (df) {
+  metrics <- c("overall_success", "days_until_trending_category", "trending_retention_category", "engagement_ratio_category")
+  
+df <- df %>%
+  mutate(
+    # Create a new column that reports the channel category of each rule
+    category = map_chr(rules, ~ {
+      # Check for matches of category_name phrases in the 'rules' text
+       matched_phrase <- purrr::detect(category_name, function(cat) str_detect(.x, fixed(cat)))
+      # If a match is found, return it; otherwise, return NA
+      ifelse(length(matched_phrase) > 0, matched_phrase, NA_character_)
+    }),
+    metric = map_chr(rules, ~ {
+      matched_phrase <- purrr::detect(metrics, function(cat) str_detect(.x, fixed(cat)))
+      ifelse(length(matched_phrase) > 0, matched_phrase, NA_character_)
+    })
+  ) %>%
+  group_by(category, metric) %>%
+  slice_max(order_by = confidence, n = 3) %>%
+  filter(confidence > 0.7) %>%
+  arrange(category, desc(confidence))
+
+return(df)
+}
+
+```
+
+## Section 3.2: Length of User Set Descriptive Variables Associations
+Are the lengths of user set descriptive variables (title, description, and tags) associated with better success metrics?
+
+Data Prep and Function Creation:
+```{r, "AM.1 - Data Prep and Function Creation"}
+# Calculate the number of tags and categorize tag usage without expanding rows
+am.1_df <- arules_df %>%
+  mutate(
+    # Calculate the number of tags for each video (count of comma-separated tags)
+    tag_usage = str_count(tags, ",") + 1,  # str_count counts commas, add 1 for the number of tags
+    tag_usage_category = ntile(tag_usage, 3)  # Create categories based on tag usage
+  ) %>%
+  mutate(
+    tag_usage_category = case_when(
+      is.na(tag_usage_category) ~ "No Tags Used",  # If no tags used
+      tag_usage_category == 1 ~ "Low", 
+      tag_usage_category == 2 ~ "Mid", 
+      tag_usage_category == 3 ~ "High"
+    )
+  ) %>%
+  # Calculate title and description lengths, then categorize them
+  mutate(
+    title_length = nchar(title),
+    description_length = nchar(description),
+    title_length_category = ntile(title_length, 3),  
+    description_length_category = ntile(description_length, 3)
+  ) %>%
+  mutate(
+    title_length_category = case_when(
+      title_length_category == 1 ~ "Short",
+      title_length_category == 2 ~ "Mid", 
+      title_length_category == 3 ~ "Long"
+    ),
+    description_length_category = case_when(
+      is.na(description_length) ~ "No Description",  # If no description provided
+      description_length_category == 1 ~ "Short",
+      description_length_category == 2 ~ "Mid", 
+      description_length_category == 3 ~ "Long"
+    )
+  ) %>%
+  # Select only relevant columns for the final output
+  select(category_name, tag_usage, tag_usage_category, title_length, title_length_category, description_length, description_length_category, overall_success, days_until_trending_category, trending_retention_category,engagement_ratio_category)
+
+# Determining what the cutoffs for the Tertitle categorization
+tertile_cutoffs_tags <- quantile(am.1_df$tag_usage, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE)
+# Low Tag Usage = 1 - 13 Tags
+# High Tag Usage = 24 - 78 Tags
+
+tertile_cutoffs_title <- quantile(am.1_df$title_length, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE)
+# Short Titles = 1 - 40 Characters 
+# Long Titles = 57 - 124 Characters
+
+tertile_cutoffs_description <- quantile(am.1_df$description_length, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE)
+# Short Descriptions = 2 - 513 Characters 
+# Long Descriptions = 1086 - 5072 Characters
+
+
+length_mining <- function(metric, eval) {
+  df <-  am.1_df %>%
+    select(category_name, tag_usage_category, title_length_category,
+           description_length_category, metric)  
+  
+  # Convert the data frame into a transactions object
+  transactions <- as(df, "transactions")
+  
+  rhs = paste0(metric, "=", eval)
+  
+  # Generate association rules using the apriori algorithm
+  rules <- apriori(
+    transactions,
+    parameter = list(support = 0.005, confidence = 0.5),
+    appearance = list(default = "lhs", rhs = rhs)
+  )
+  
+  if (length(rules) == 0) {
+    return("There are no rules for this metric")
+  }
+  
+  # Convert rules to data frame, filter by lift > 2, and arrange them by descending lift
+  rules_df <- as(rules, "data.frame") %>%
+    filter(lift > 1.5) %>%
+    arrange(desc(lift))
+  
+  if (nrow(rules_df) == 0) {
+    return("There are no rules with a lift higher than 2 for this metric")
+  }
+  
+  return(rules_df)
+}
+```
+
+Overall Success:
+```{r, "AM.1 - Overall_Success", results = 'hide', warning=FALSE}
+length_overall_success <- length_mining("overall_success", "Good")
+inverse.length_overall_success <- length_mining("overall_success", "Poor")
+
+```
+
+``` {r}
+am_plot(length_overall_success, inverse.length_overall_success,"Trending Success", "Good", "Poor", "Descriptive Variable Lengths")
+
+Good.rules_table <- bind_rows(Good.rules_table, length_overall_success,)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse.length_overall_success)
+```
+
+Trending Speed:
+```{r, "AM.1 - Days Until Trending", results = 'hide', warning=FALSE}
+length_speed_success <- length_mining("days_until_trending_category", "Good")
+inverse.length_speed_success <- length_mining("days_until_trending_category", "Poor")
+```
+
+``` {r}
+print(length_speed_success)
+print(inverse.length_speed_success)
+```
+
+Trending Retention:
+```{r, "AM.1 - Trending Retention", results = 'hide', warning=FALSE}
+length_retention_success <- length_mining("trending_retention_category", "Good")
+inverse.length_retention_success <- length_mining("trending_retention_category", "Poor")
+```
+
+``` {r}
+print(length_retention_success)
+
+ggplot(inverse.length_retention_success, aes(x = support, y = lift, color = confidence)) +
+    geom_point(size = 8, alpha = 0.75) +  # Adjusted size for better visualization
+    scale_color_gradient2(low = "tomato3", mid = "tan1", high = "darkolivegreen3", 
+                          midpoint = 0.6, name = "Confidence") + 
+    theme_light() +
+    labs(
+      title = "Association Mining on Youtube Trending Descriptive Variable Lengths",
+      x = "Support",
+      y = "Lift",
+      subtitle = paste("Where Trending Retention = Poor and Lift > 1.5")) 
+
+
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse.length_retention_success)
+```
+
+Engagement Ratio:
+```{r, "AM.1 - Engagement Ratio", results = 'hide', warning=FALSE}
+length_engage_success <- length_mining("engagement_ratio_category", "Good")
+inverse.length_engage_success <- length_mining("engagement_ratio_category", "Poor")
+```
+
+``` {r}
+am_plot(length_engage_success, inverse.length_engage_success,"Engagement Ratio", "Good", "Poor", "Descriptive Variable Lengths")
+
+Good.rules_table <- bind_rows(Good.rules_table, length_engage_success)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse.length_engage_success)
+```
+
+Final Rules Table for Descriptive Variable Lengths
+``` {r, "Final Rules Table (Length)"}
+length_rules_good <- Good.rules_table
+length_rules_poor <- Poor.rules_table
+
+length_rules_good <- clean_rules_tables(length_rules_good)
+length_rules_poor <- clean_rules_tables(length_rules_poor)
+
+mean(length_rules_good$confidence) 
+mean(length_rules_poor$confidence)
+
+```
+
+``` {r, echo = FALSE}
+# Plotting Final Association Rules Tables
+am_plot(length_rules_good, length_rules_poor,"Success", "Good", "Poor", "Descriptive Variables Length")
+
+# Printing Rules Table
+kable(length_rules_good, caption = "Length of Descriptive Varibales *Good* Success Rules") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+# Printing Rules Table
+kable(length_rules_poor, caption = "Length of Descriptive Variables *Poor* Success Rules") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+cat(
+  "\n**Association Rules Analysis**\n",
+  "Descriptive Variable Length Categories were categorize based on the following Tertile Categorization: \n",
+ "- Low Tag Usage = 1 - 13 Tags\n",
+ "- High Tag Usage = 24 - 78 Tags\n",
+ "- Short Titles = 1 - 40 Characters \n",
+ "- Long Titles = 57 - 124 Characters\n",
+ "- Short Descriptions = 2 - 513 Characters \n",
+ "- Long Descriptions = 1086 - 5072 Characters\n",
+ 
+  "\nThe rules table was filtered to include only those with a minimum of 70% confidence. The final table includes associations for Good and Poor Success metrics based on descriptive variable lengths in videos, with the following results:\n",
+  "- Good Success: 2 rules across two channel categories (Music and Comedy)\n",
+  "- Poor Success: 12 rules across two channel categories (Sports, News & Politics)\n",
+  
+  "\nAs seen in the association mining chart, the number of rules and the confidence in those rules is much higher for Poor Success associations compared to Good Success associations. The average confidence for Good Success rules was 72.7% (N = 2), while the average confidence for Poor Success rules was 88.8% (N = 12). This suggests that while there is no exact methodology for ensuring a video's success, there are clearly identifiable patterns to avoid in order to minimize the chances of experiencing poor success on the trending page.\n",
+  
+  "\n**Key Insights:**\n",
+  "- **Comedy Category**: Channels are 2.2 times more likely to achieve Good Engagement Ratios if they keep their tag usage low and their titles short (73% Confidence).\n",
+  "- **Music Category**: Channels are 2.15 times more likely to achieve Good Engagement Ratios if they keep their titles short and offer more content in their descriptions (71% Confidence).\n",
+  
+  "\nFor those aiming to improve overall success in the **News & Politics** category, it is recommended to use more tags and provide more context in the descriptions. You are 2.34 times more likely to experience Poor Success in this category if you use fewer tags and have short descriptions (78% Confidence).\n",
+  "For those in the **Sports** category, success can be improved by using tags, keeping titles shorter, and providing more context in descriptions. You are 2.57 times more likely to experience Poor Success in this category if you fail to use tags, have long titles, and offer little context in descriptions (85.7% Confidence).\n"
+)
+```
+
+## Section 3.3: Published Timing Associations
+Are videos published at specific times (Times of day, times of week, times of month,
+times of year) associated with better success metrics?
+
+Data Prep and Function Creation:
+``` {r, "AM.2 - Data Prep and function creation"}
+# Reinitialize the rules tables as empty data frames
+Good.rules_table <- data.frame( 
+  rules =character(),
+  support = numeric(),
+  confidence = numeric(),
+  coverage = numeric(),
+  lift = numeric(),
+  count = integer()
+)[0, ]
+
+Poor.rules_table <- data.frame( 
+  rules =character(),
+  support = numeric(),
+  confidence = numeric(),
+  coverage = numeric(),
+  lift = numeric(),
+  count = integer()
+)[0, ]
+
+am.2_df <- arules_df %>%
+  mutate(
+    # Recode timestamp into descriptive labels
+    time_of_day = case_when(
+      hour(date_published) >= 0 & hour(date_published) < 6 ~"Night",
+      hour(date_published) >= 6 & hour(date_published) < 12 ~ "Morning",
+      hour(date_published) >= 12 & hour(date_published) < 18 ~ "Afternoon",
+      hour(date_published) >= 18 ~ "Evening"),
+    
+    # Recode the Date into descriptive labels, such as day-of-week, time of month, and season
+    time_of_week = wday(date_published, label = TRUE, abbr = FALSE),
+    
+    time_of_month = case_when(
+      ceiling(day(date_published) / 7) == 1 ~ "Beginning",
+      (ceiling(day(date_published) / 7 ) == 2 | 
+         ceiling(day(date_published) / 7 ) == 3) ~ "Middle",
+      ceiling(day(date_published) / 7 ) >= 4 ~ "End"),
+    
+    time_of_year = case_when(
+      month(date_published, label = TRUE, abbr = FALSE) %in% c(
+        "March", "April", "May") ~ "Spring",
+      month(date_published, label = TRUE, abbr = FALSE) %in% c(
+        "June", "July", "August") ~ "Summer", 
+    month(date_published, label = TRUE, abbr = FALSE) %in% c(
+      "September", "October", "November") ~ "Autumn",
+    month(date_published, label = TRUE, abbr = FALSE) %in% c(
+      "December", "January", "February") ~ "Winter")
+  ) %>%
+  select(category_name, time_of_day, time_of_week, time_of_month, time_of_year, overall_success, days_until_trending_category, trending_retention_category, engagement_ratio_category)
+
+
+time_mining <- function(metric, eval) {
+  df <-  am.2_df %>%
+    select(category_name, time_of_day, time_of_week, time_of_month, time_of_year, metric)  
+  
+  # Convert the data frame into a transactions object
+  transactions <- as(df, "transactions")
+  
+  rhs = paste0(metric, "=", eval)
+  
+  # Generate association rules using the apriori algorithm
+  rules <- apriori(
+    transactions,
+    parameter = list(support = 0.005, confidence = 0.5),
+    appearance = list(default = "lhs", rhs = rhs)
+  )
+  
+  if (length(rules) == 0) {
+    return("There are no rules for this metric")
+  }
+  
+  # Convert rules to data frame, filter by lift > 2, and arrange them by descending lift
+  rules_df <- as(rules, "data.frame") %>%
+    filter(lift > 1.5) %>%
+    arrange(desc(lift))
+  
+  if (nrow(rules_df) == 0) {
+    return("There are no rules with a lift higher than 2 for this metric")
+  }
+  
+  return(rules_df)
+}
+
+```
+
+Overall Success:
+``` {r, "AM.2 - Overall Success", results = 'hide', warning=FALSE}
+overall_success_rules <- time_mining("overall_success", "Good")
+inverse_success_rules <- time_mining("overall_success", "Poor")
+```
+
+``` {r}
+am_plot(overall_success_rules, inverse_success_rules,"Trending Success", "Good", "Poor", "Time Variables")
+
+Good.rules_table <- bind_rows(Good.rules_table, overall_success_rules)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse_success_rules)
+```
+
+Trending Speed:
+``` {r, "AM.2 - Days until Trending", results = 'hide', warning=FALSE}
+days.until_success_rules <- time_mining("days_until_trending_category", "Good")
+inverse_days.until_srules <- time_mining("days_until_trending_category", "Poor")
+
+```
+
+``` {r}
+am_plot(days.until_success_rules, inverse_days.until_srules,"Trending Speed", "Good", "Poor", "Time Variables")
+
+Good.rules_table <- bind_rows(Good.rules_table, days.until_success_rules)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse_days.until_srules)
+```
+
+Trending Retention:
+``` {r, "AM.2 - Trending Retention", results = 'hide', warning=FALSE}
+retention_success_rules <- time_mining("trending_retention_category", "Good")
+inverse_retention_success_rules <- time_mining("trending_retention_category", "Poor")
+```
+
+``` {r}
+am_plot(retention_success_rules, inverse_retention_success_rules,"Trending Retention", "Good", "Poor", "Time Variables")
+ 
+Good.rules_table <- bind_rows(Good.rules_table, retention_success_rules)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse_retention_success_rules)
+```
+
+Engagement Ratio:
+``` {r, "AM.2 - Engagement Ratio", results = 'hide', warning=FALSE}
+engagement_success_rules <- time_mining("engagement_ratio_category", "Good")
+inverse_engagement_rules <- time_mining("engagement_ratio_category", "Poor")
+```
+
+``` {r}
+am_plot(engagement_success_rules, inverse_engagement_rules,"Engagement Ratio", "Good", "Poor", "Time Variables")
+
+Good.rules_table <- bind_rows(Good.rules_table, engagement_success_rules)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse_engagement_rules)
+
+```
+
+Final Rules Table for Publishing Time:
+```{r, "Final Rules Table (Time)"}
+time_rules_good <- Good.rules_table
+time_rules_poor <- Poor.rules_table
+
+time_rules_good <- clean_rules_tables(time_rules_good)
+time_rules_poor <- clean_rules_tables(time_rules_poor)
+
+mean(time_rules_good$confidence) 
+mean(time_rules_poor$confidence)
+```
+
+``` {r, echo = FALSE}
+# Plotting Final Association Rules Tables
+am_plot(time_rules_good, time_rules_poor,"Success", "Good", "Poor", "Time Variables")
+
+# Printing Rules Table
+kable(time_rules_good, caption = "Time Varibales *Good* Success Rules") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+# Printing Rules Table
+kable(time_rules_poor, caption = "Time Variables *Poor* Success Rules") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+cat(
+  "\n**Association Rules Analysis**\n",
+    "Times of Day were categorized based on the follow categorizations: \n",
+ "- Night = 12AM - 6 AM\n",
+ "- Morning = 6AM - 12PM\n",
+ "- Afternoon = 12PM - 6PM \n",
+ "- Evning = 6PM - 12AM \n",
+ 
+  "\nThe rules table was filtered to include only those with a minimum of 70% confidence. The final table includes associations for Good and Poor Success metrics based the time of posting, with the following results:\n",
+  "- Good Success: 7 rules across two channel categories (Again, in Music and Comedy)\n",
+  "- Poor Success: 19 rules across five channel categories (Again, Sports and News & Politics, but also in Gaming, People & Blogs, and General Channel Insights)\n",
+  
+  "\nOnce again the number of rules and the confidence in those rules is much higher for Poor Success associations compared to Good Success associations, however, the margins are much closer in this section than they were in the descriptive variable lengths section. The average confidence for Good Success rules was 71.9% (N = 7), while the average confidence for Poor Success rules was 83% (N = 19). This still suggests that while there is no exact methodology for ensuring a video's success based on the post timing, however, there are clearly identifiable patterns to avoid in order to minimize the chances of experiencing poor success on the trending page.\n",
+  
+  "\n**Key Insights:**\n",
+  "Good Success:\n",
+  "- **Comedy Category**: Channels are 2.15 times more likely to achieve Good Engagement Ratios if they post in the evenings at the end of the month (71.8% Confidence).\n",
+  "- **Music Category**: Channels are more likely to achieve Good Overall Success if they post in the afternoons during the Winter(2.19x) or Wednesdays(2.14x) (73.2% / 71.2% Confidence).\n",
+  
+  "\nPoor Success:",
+  "\nFor those posting in the **News & Politics** category, they are 2.8 times likely to experiance poor engagement ratios if they post durings the evenings(94.6% Confidence) and 2.5 times likely to experiance poor overall success during the Summer (83.3% Confidence).\n",
+  "For those posting in the **Sports** category, they are 2.89x times likely to experiance poor engagement ratios if they post durings the night time on Sundays in the middle of the month and (96.3.6% Confidence) and 2.61 times likely to experiance poor overall success during the evenings on Saturdays (86.8% Confidence).\n",
+  "People posting in the People & Blogs or the Gaming category experiance low trending speeds when they post in the Evenings during the summer (Blogs: 2.2x | 74.3% Confidence) (Gaming: 2.1x | 70.1% Confidence)\n", 
+  "Finally, all three rules associated with Poor Trending speed for all channel categories report that posting during Evenings in the summer increases your chances of poor success by more than 2.1 times (Roughly 72-74% Confidence)\n"
+)
+```
+
+## Section 3.4: Dominant Sentiments Associations
+Are videos of certain sentiments associated with better success metrics across different channel categories?
+
+Data Prep and Function Creation:
+``` {r}
+# Reinitialize the rules tables as empty data frames
+Good.rules_table <- data.frame( 
+  rules =character(),
+  support = numeric(),
+  confidence = numeric(),
+  coverage = numeric(),
+  lift = numeric(),
+  count = integer()
+)[0, ]
+
+Poor.rules_table <- data.frame( 
+  rules =character(),
+  support = numeric(),
+  confidence = numeric(),
+  coverage = numeric(),
+  lift = numeric(),
+  count = integer()
+)[0, ]
+
+# No Recoding Required as Dominant Sentiments is already a categorical factor
+sentiment_mining <- function(metric, eval) {
+  df <-  arules_df %>%
+    select(category_name, dominant_sentiment, metric)  
+  
+  # Convert the data frame into a transactions object
+  transactions <- as(df, "transactions")
+  
+  rhs = paste0(metric, "=", eval)
+  
+  # Generate association rules using the apriori algorithm
+  rules <- apriori(
+    transactions,
+    parameter = list(support = 0.005, confidence = 0.5),
+    appearance = list(default = "lhs", rhs = rhs)
+  )
+  
+  if (length(rules) == 0) {
+    return("There are no rules for this metric")
+  }
+  
+  # Convert rules to data frame, filter by lift > 2, and arrange them by descending lift
+  rules_df <- as(rules, "data.frame") %>%
+    filter(lift > 1.5) %>%
+    arrange(desc(lift))
+  
+  if (nrow(rules_df) == 0) {
+    return("There are no rules with a lift higher than 2 for this metric")
+  }
+  
+  return(rules_df)
+}
+```
+
+Overall Success:
+```{r, "AM.3 - Overall Success", results = 'hide', warning=FALSE}
+sentiment_overall_rules <- sentiment_mining("overall_success", "Good")
+inverse.sentiment_overall_rules <- sentiment_mining("overall_success", "Poor")
+```
+
+``` {r}
+am_plot(sentiment_overall_rules, inverse.sentiment_overall_rules,"Overall Success", "Good", "Poor", "Dominant Sentiment")
+
+Good.rules_table <- bind_rows(Good.rules_table, sentiment_overall_rules)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse.sentiment_overall_rules)
+```
+
+Trending Speed:
+``` {r, "AM.3 - Days Until Trending", results = 'hide', warning=FALSE}
+sentiment_speed_rules <- sentiment_mining("days_until_trending_category", "Good")
+inverse.sentiment_speed_rules <- sentiment_mining("days_until_trending_category", "Poor")
+```
+
+``` {r}
+print(sentiment_speed_rules)
+print(inverse.sentiment_speed_rules)
+
+```
+
+Trending Retention:
+``` {r, "AM.3 - Trending Retention", results = 'hide', warning=FALSE}
+sentiment_retention_rules <- sentiment_mining("trending_retention_category", "Good")
+inverse.sentiment_retention_rules <- sentiment_mining("trending_retention_category", "Poor")
+
+```
+
+``` {r}
+print(sentiment_retention_rules)
+
+ggplot(inverse.sentiment_retention_rules, aes(x = support, y = lift, color = confidence)) +
+    geom_point(size = 8, alpha = 0.75) +  # Adjusted size for better visualization
+    scale_color_gradient2(low = "tomato3", mid = "tan1", high = "darkolivegreen3", 
+                          midpoint = 0.6, name = "Confidence") + 
+    theme_light() +
+    labs(
+      title = "Association Mining on YouTube Trending Dominant Sentiment",
+      x = "Support",
+      y = "Lift",
+      subtitle = paste("Where Trending Retention = Poor and Lift > 1.5")) 
+
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse.sentiment_retention_rules)
+
+```
+
+Engagement Ratio:
+``` {r, "AM.3 - Engageemnt Ratio", results = 'hide', warning=FALSE}
+sentiment_engage_rules <- sentiment_mining("engagement_ratio_category", "Good")
+inverse.sentiment_engage_rules <- sentiment_mining("engagement_ratio_category", "Poor")
+```
+
+``` {r}
+am_plot(sentiment_engage_rules, inverse.sentiment_engage_rules,"Engagement Ratio", "Good", "Poor", "Dominant Sentiment")
+
+Good.rules_table <- bind_rows(Good.rules_table, sentiment_engage_rules)
+Poor.rules_table <- bind_rows(Poor.rules_table, inverse.sentiment_engage_rules)
+```
+ 
+Final Rules Table for Dominant Sentiment
+``` {r, "AM.3 - Final Rules Table (Sentiments)"}
+sentiment_rules_good <- Good.rules_table
+sentiment_rules_poor <- Poor.rules_table
+
+sentiment_rules_good <- clean_rules_tables(sentiment_rules_good)
+sentiment_rules_poor <- clean_rules_tables(sentiment_rules_poor)
+
+mean(sentiment_rules_good$confidence) 
+mean(sentiment_rules_poor$confidence)
+```
+
+``` {r, echo = FALSE}
+# Plotting Final Association Rules Tables
+am_plot(sentiment_rules_good, sentiment_rules_poor,"Success", "Good", "Poor", "Dominant Sentiments")
+
+# Printing Rules Table
+kable(sentiment_rules_good, caption = "Dominant Sentiment *Good* Success Rules") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+# Printing Rules Table
+kable(sentiment_rules_poor, caption = "Dominant Sentiment *Poor* Success Rules") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:8, width = "2cm")
+
+cat(
+  "\n**Association Rules Analysis**\n",
+  "The rules table was filtered to include only those with a minimum of 70% confidence. The final table includes associations for Good and Poor Success metrics based on dominant sentiments expressed in the video description, with the following results:\n",
+  "- Good Success: Only 1 rule in the Music Category\n",
+  "- Poor Success: 10 rules across two channel categories (Sports, News & Politics)\n",
+  
+  "\nMore so than in the previous two categories, the differences between the the Good Rules and Poor rules is apparent. In this section, only 1 rule for good success associations made it past the 70% confidence filter, where 10 rules for poor success associations made it through. Coincidently, the same channel categories as the precious two sections are present once again in this results page. The confidence for Good Success rule is 71% (N = 1), while the average confidence for Poor Success rules was 84.4% (N = 10). This final association test affirms the idea that while there is no exact methodology for ensuring a video's success, there are clearly identifiable patterns to avoid in order to minimize the chances of experiencing poor success on the trending page.\n",
+  
+  "\n**Key Insights:**\n",
+  "- **Music Category**: Channels are 2.13 times more likely to achieve Good Engagement Ratios if the dominant sentiment in their video descriptions is trust (71% Confidence).\n",
+  
+  "\nFor those aiming to improve their engagement ratio in the **News & Politics** category, it is recommended to uavoid the anticipation sentiment in your video descriptions. You are 2.8 times more likely to experience Poor Success in this category if that is the dominant emotion in your video description (93.7% Confidence).\n",
+  "For those in the **Sports** category, overall success and engagement ratio can be improved by avoiding the trust and anticipation sentiments. You are respectively 2.39 times and 2.26 times more likely to experience Poor Success in this category if you use these sentiments in your video descriptions (79.8% / 75.6% Confidence).\n"
+)
+```
+
+## Section 3.6: Final Association Rules 
+``` {r, "AM.4"}
+Good.rules_table <- rbind(length_rules_good, time_rules_good, sentiment_rules_good)
+Poor.rules_table <- rbind(length_rules_poor, time_rules_poor, sentiment_rules_poor)
+
+mean(Good.rules_table$confidence) 
+mean(Poor.rules_table$confidence)
+
+# Plotting Final Association Rules Tables
+am_plot(Good.rules_table, Poor.rules_table,"Success", "Good", "Poor", "Data")
+```
+
+``` {r, echo = FALSE}
+cat(
+  "\n**Association Mining Insights**\n",
+  "Our analysis of the combined results from all three association mining methods reveals that there is no one-size-fits-all strategy for guaranteed success on the trending page. While we cannot offer a foolproof formula, we can highlight behaviors to avoid in certain content categories to minimize the risk of poor performance. By steering clear of these pitfalls, our clients can reduce their chances of underperforming.\n",
+  "Achieving better success most likely depends on more nuanced factors, such as content quality, community engagement, and broader strategies that go beyond simple behaviors like tag usage or posting times. In summary, clients should focus on avoiding these negative patterns, but also recognize that enhancing success requires a balanced and thoughtful content strategy."
+)
+```
+
+
+## Conclusions 
+What are our final recommendations to YouTube Creators based on our the descriptive statistics of our dataset, our sentiment analysis, and our association mining?
+``` {r, echo = FALSE}
+cat(
+  "**Final Conclusions**\n",
+  "So what we can recommend to our clients is to keep the majority of videos focused on positivity and then try to add in aspects of anticipation and trust unless stated otherwise. There aren’t really any factors that directly increase the success of a video, but there are some shown to inhibit the success of a video. For instance, comedy channels should keep the number of tags low and titles short while music channels should keep their titles short and have a detailed description, with some sentiments of trust. Additionally, news and politics channels should use lots of tags and have a detailed description, but avoid anticipation sentiments. And lastly, sports channels should use lots of tags, have short tiles, and a detailed description, but avoid trust and anticipation sentiments. In regard to every channel, they should avoid posting during the evenings in Summer to not decrease their chance of making it on the trending page. \n",
+  "Overall, there isn’t anything you can really do to guarantee success on YouTube. The best recommendation would be just to make high quality videos that keep people interested and build a following. That way, you will have people ready to watch your videos whenever you post and allow your videos to trend much faster."
+)
+
+```
+
+
+
+
+Limitations:
+```{r, "Limitations", echo = FALSE}
+cat(
+  " **Limitations**\n",
+  
+  "\n**Reccomendation Limitations:**\n",
+  "We began this project wanting to give reccomendations for creators on how to maximize their chances of reaching the trending page by emulating successful creators. However, through our analysis, we discovered that the data we had did not lend itself to those insights, as we only had data for videos that did reach the trending page. Becuase we were unable to compare against videos that reached the trending page and videos that hadn't, we were unable to give reccomendations for HOW to reach the trending page, only how to improve success ONCE you started trending.\n",
+  
+  "**Creator vs Company:**\n",
+  "There was no easy way to mass quantify whether a YouTube channel was operated by a company or an independent creator. While it was possible to manually classify the top 40 or 50 channels, this approach was not scalable for the entire dataset. Using the following code:\n",
+  "`creator_type = ifelse(grepl('Official|VEVO|Company|Media|Productions|Studio', channel_title, ignore.case = TRUE))`\n",
+  "had a high error rate, as it missed companies with acronyms or simpler names, such as NBA, SpaceX, and ESPN, and incorrectly classified independent creators who included terms like 'media' or 'Productions' in their channel name. A more accurate classification could be achieved by exploring the YouTube API to see if it offers internal flags or metadata to distinguish creator types. However, due to time constraints, only the top 50 successful YouTubers were manually classified, and it was not feasible to extend this classification to the entire dataset.\n",
+  
+  "\n**Hardware Limitations:**\n",
+  "The sentiment analysis and association mining processes placed significant strain on the computing resources. Several analyses took upwards of 20 to 30 minutes to run. In total, the execution time for the entire R Markdown (RMD) file was 32 minutes and 16 seconds. Due to our limited computational power, we were unable to expand this study past the US Trending data, despite the availability of data from other countries and regions. This constraint restricted the scope of the analysis, preventing a more global comparison of trends and metrics.\n",
+  
+  "\n**Future Enhancements:**\n",
+  "More sophisticated models, such as large language models (LLMs) or advanced natural language processing (NLP) techniques, could potentially provide deeper insights into different factors impacts on success metrics. These models could enhance the scalability and accuracy of the analysis moving forward, however, these models would require more powerful computing resources. Secondly, expanding our hardware capabilities to be able to handle data from either other regions or video data from the same time period / region that didn't reach the trending page would allow us to offer insights how HOW creators can maximize their trending potential and success. Unforuntatly, our hardware was pushed to the limits by this data alone, and expanding our analysis to include more data points was not/is not possible until we can increase out computing power.\n"
+)
+```

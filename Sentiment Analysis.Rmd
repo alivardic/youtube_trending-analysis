@@ -1,0 +1,258 @@
+---
+title: "Final Project"
+author: "Alina Hagen, Sherman LaCost"
+date: "`r Sys.Date()`"
+---
+## Data and Text Mining Final Project: Maximizing Success on YouTube's Trending Page: Content Optimization Strategies Based on Analysis of the Top 200 Videos Over the Last Four Years
+
+**Topic:** Success Factors on YouTube Trending Videos 
+
+**Question:** What are common trends among the top trending YouTube videos in the US, and how do different factors impact their success on the trending page?
+
+**Goal:** To analyze data from each day’s top 200 trending YouTube videos from August 2020 to
+April 2024 and identify success factors among the most successful videos in the U.S. This
+analysis will evaluate a video's success on the trending page based on the following success metrics:
+
+  - *Engagement Ratio:* The total audience interaction (sum of comments, likes, and
+  dislikes) relative to the view count as recorded on the final day the video appears on the
+  trending list (representing the highest engagement level captured in the dataset)
+  
+  - *Trending Speed:* How long a video took to reach the trending page
+  
+  - *Trending Retention:* How long a video remains on the trending page
+  
+---
+
+## Libraries
+``` {r, message = FALSE, warning = FALSE}
+
+# Libraries / Packages
+library(arules)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(grid)
+library(gridExtra)
+library(jsonlite)
+library(kableExtra)
+library(knitr)
+library(lubridate)
+library(purrr)
+library(reshape2)
+library(stringr)
+library(syuzhet)
+library(textdata)
+library(tidytext)
+library(readr)
+
+```
+
+```{r}
+yt_new <- read_csv("data/cleaned_youtube_data.csv")
+unique_video_data <- read_csv(unique_video_data, "data/unique_video_data.csv")
+```
+
+## Section 2.1: Sentiment Analysis
+Due to data constraints, we used the video description to determine a video's overall sentiment. While this method provided valuable insights into how a video's sentiment impacts video success, it is a limitation, as video descriptions may not full repersent the overall emotional tone of the entire video.
+
+---
+
+What are the average success metrics depending on video's dominant sentiments?
+```{r, "SA.1", warning=FALSE}
+yt_new_description <- tibble(text = str_to_lower(unique_video_data$description)) 
+
+#replace NA
+yt_new_description[is.na(yt_new_description)] <- ""
+
+#find the emotions based on description
+emotions <- get_nrc_sentiment(yt_new_description$text)#find the emotions per entry
+
+yt_new_description <- cbind(yt_new_description, emotions) #merges emotions table with description dataframe
+
+# Summarize the number of items (count) per emotion column
+emo_sum <- emotions %>%
+  summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  pivot_longer(everything(), names_to = "emotion", values_to = "count")
+
+yt_new_description <- cbind(unique_video_data, yt_new_description) 
+yt_new_description <- yt_new_description[,-5] # Delete the original Description column
+```
+
+``` {r, "SA.1 - Plots"}
+# Calculate average success metrics by dominant sentiment
+yt_new_description$dominant_sentiment <- apply(emotions, 1, function(x) {
+  max_value <- max(x)
+  if (max_value == 0) {
+    return("no sentiment/\nno description")
+  } else {
+    return(names(x)[which.max(x)])
+  }
+})
+
+average_description_sentiment <- yt_new_description %>%
+  group_by(dominant_sentiment) %>%
+  summarise(
+    total_videos = n(),
+    avg_trending_speed = round(mean(days_until_trending),2),
+    avg_trending_retention = round(mean(trending_retention),2),
+    avg_engagement_ratio = round(mean(engagement_ratio), 3)
+  ) %>%
+  arrange(desc(total_videos))
+
+#Count of Emotional Elements in Video Descriptions
+ggplot(emo_sum, aes(x = reorder(emotion, -count), y = count)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Count of Emotional Elements in Video Descriptions", x = "Sentiment", y = "Count")
+
+#Distribution of Dominant Sentiments across Trending Videos 
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -total_videos), y = total_videos)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Distribution of Dominant Sentiments in Trending Videos", x = "Sentiment", y = "Count")
+
+# Average views by dominant sentiment
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -avg_trending_speed), y = avg_trending_speed)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Average Trending Speed by Dominant Sentiment", x = "Sentiment", y = "Trending Speed (Days)")
+
+# Average likes by dominant sentiment
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -avg_trending_retention), y = avg_trending_retention)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Average Trending Retention by Dominant Sentiment", x = "Sentiment", y = "Trending TRetention (Days)")
+
+# Average comments by dominant sentiment
+ggplot(average_description_sentiment, aes(x = reorder(dominant_sentiment, -avg_engagement_ratio), y = avg_engagement_ratio)) +
+  geom_bar(stat = 'identity', fill = "steelblue") +
+  labs(title = "Average Engagement Ratio by Dominant Sentiment", x = "Sentiment", y = "Engagement Ration ( (likes + comments) / views)")
+```
+
+``` {r, echo = FALSE}
+# Print the average metrics
+kable(average_description_sentiment, caption = "Dominant Sentiment Average Success Metrics") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:4, width = "2cm")
+```
+
+``` {r, echo = FALSE}
+cat(
+  "\n**Dominant Sentiments and Success Metrics**\n",
+  
+  "The bar charts presented help visualize the distribution of dominant sentiments across all videos in this dataset (N = 47,124 unique videos), as well as the average success metrics across different dominant sentiments. One of the most surprising observations was the apparent uniformity across sentiments in terms of trending success. \n",
+  
+  "Initially, it was hypothesized that videos with more negative or anger-driven sentiments would stand out, resulting in longer trending retention, quicker trending times, or, at the very least, more engagement. This hypothesis was grounded in the common phenomenon of 'rage-bait' videos—those designed to provoke strong emotional reactions and drive more interactions through upsetting or controversial topics. These videos often capitalize on emotional engagement to boost their traction. \n",
+  
+  "However, as shown in the data, no substantial differences were found between the dominant sentiment expressed in the video description and the video's actual performance on the trending page. This finding challenges the assumption that videos with certain emotional tones would inherently perform better or worse. In the next section, we will statistically test these trends to confirm whether the metrics are as similar as they appear. Nevertheless, the lack of a clear relationship between sentiment and success was unexpected and intriguing.\n"
+)
+```
+
+## Section 2.2: Dominant Sentiment Correlation with Success
+Do video sentiments have a statistically significant impact on success metrics? (T-Test /
+ANOVA hypothesis test)
+``` {r, echo = FALSE}
+cat("\n**ANOVA Hypothese:**\n Null Hypothesis (H0): There is no significane difference in success metrics between dominant sentiments.\nAlternative Hypothesis (H1): There is significane difference in success metrics between dominant sentiments. ")
+```
+
+```{r, "SA.2"}
+
+#Engagement Ratio ANOVA
+engage_aov <- aov(engagement_ratio ~ dominant_sentiment, data = yt_new_description)
+summary(engage_aov)
+# Get residuals from the ANOVA model
+residuals <- residuals(engage_aov)
+# Q-Q plot to check normality visually
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+#Trending Speed ANOVA
+speed_aov <- aov(days_until_trending ~ dominant_sentiment, data = yt_new_description)
+summary(speed_aov)
+# Get residuals from the ANOVA model
+residuals <- residuals(speed_aov)
+# Q-Q plot to check normality visually
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+#Trending Retention ANOVA
+retention_aov <- aov(trending_retention ~ dominant_sentiment, data = yt_new_description)
+summary(retention_aov)
+# Get residuals from the ANOVA model
+residuals <- residuals(retention_aov)
+# Q-Q plot to check normality visually
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+```
+
+``` {r, echo = FALSE}
+cat("**ANOVA Results:**\n
+While the ANOVA results suggest that dominant sentiments in a video's written description might have a statistically significant impact on success metrics, the Quantile-Quantile (Q-Q) plot shows that the residuals don’t follow a normal distribution. This means that the normality assumption for ANOVA is violated, which makes the results less reliable. It’s possible that the significance we found is due to this assumption being violated, which could lead to a higher chance of false positives (Type I error). Because of this, we can’t confidently comment on how the dominant sentiments in a video's written description impact success metrics based on the ANOVA results alone, and we can’t draw a clear conclusion within the scope of this project.\n\n
+To get more reliable results in the future, other methods could be used. For example, we could try machine learning tools like Large Language Models (LLMs) to analyze sentiments in more detail or use generalized linear models (GLMs), which don’t require normality. Non-parametric tests like the Kruskal-Wallis test could also help since they don’t rely on the same assumptions. Additionally, advanced natural language processing (NLP) techniques, like topic modeling or multi-dimensional sentiment analysis, could give us a deeper understanding of how sentiment might relate to success metrics. Exploring these tools in a future project could lead to stronger and more reliable findings.\n\n
+That being said, while we cannot comment on Dominant Sentiment's impact on success metrics, we can offer some insights into most common sentiments across both trendings videos as a whole and within each channel category")
+```
+
+## Section 2.3: Dominant Sentiment Frequency 
+Are trending videos more commonly positive, negative, or associated with other
+emotions?
+```{r, "SA.3"}
+video_sentiment_counts <- yt_new_description %>%
+  group_by(dominant_sentiment) %>%
+  summarise(
+    video_count = n()
+  )%>%
+  arrange(desc(video_count)) %>%
+  slice_max(order_by = video_count, n = 5)
+```
+
+``` {r, echo = FALSE}
+kable(video_sentiment_counts, caption = "Dominant Sentiment Seen on the Trending Page") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2, width = "2cm")
+```
+
+``` {r, echo = FALSE}
+cat("The top 5 most common sentiments expressed in video descriptions in this dataset were positive, anticipation, negavtive, trust, and no sentiment/no \n")
+```
+
+## Section 2.4: Dominant Sentiment per Channel Category
+Do trending videos in certain channel categories lean to specific sentiments?
+```{r, "SA.4"}
+category_sentiment_counts <- yt_new_description %>%
+  group_by(category_name, dominant_sentiment) %>%
+  summarise(
+    video_count = n()
+  )%>%
+  slice_max(order_by = video_count, n = 2) %>%
+  arrange(category_name, desc(video_count)) 
+```
+
+``` {r, echo = FALSE}
+kable(category_sentiment_counts, caption = "Top 2 Dominant Sentiments per Channel Cateogry") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, background = "#f5f5f5") %>%
+  column_spec(1, bold = TRUE, width = "3cm") %>%
+  column_spec(2:3, width = "2cm")
+```
+
+``` {r, echo = FALSE}
+cat("Suprisingly, all 15 categories of channels had the most prominent sentiment be positivity. After positive sentiments, the next most common sentiments expressed where anticipation (Autos & Vehicles, Comedy, Education, Entertainment, Film & Animation, Howto & Style, News & Politics, Nonprofits & Activism, People & Blogs, Pets & Animals, Science & Technology, Sports, Travel & Events), Negative (Gaming), and Joy (Music) \n")
+```
+
+## Section 2.5: Sentiment Analysis Conclusions 
+What are the overall sentiments of each Unique Video in the dataset? (Add Output to
+Unique.Video_DF) What are the conclusions from the Sentiment Analysis?
+```{r, "SA.6"}
+# Add Overall Video Sentiment to Unique.video_df
+unique_video_data$dominant_sentiment <- yt_new_description$dominant_sentiment
+```
+
+``` {r, echo = FALSE}
+cat("The analysis of dominant sentiments of YouTube videos revealed no significant relationship between sentiment and trending success, contrary to initial expectations. While the ANOVA results suggested significance of sentiment impact on success metrics, violations of the normality assumption raised concerns about the reliability of these findings. Despite hypotheses suggesting that negative or anger-driven sentiments might lead to longer trending times or higher engagement, the data showed uniformity across sentiment types, indicating that sentiment may not drastically affect a video's performance once it reaches the trending page.\n",
+
+"\nHowever, the statistics did indicate that positively focused content made up the vast majority of videos, accounting for just under half of all videos that reached the US trending page between August 2020 and April 2024 (21,246 out of 47,124 videos). This suggests that videos with more positive subject matter are more likely to make it to the trending page. Once a video is trending, however, the dominant sentiment appears to have questionable impact on its ongoing success that would require more sophisticated machine learning techniques to uncover. For now, we will conclude that dominant sentiment has little effect on the success metrics of trending videos.\n", 
+
+"\nBased on our analysis, we recommend that our clients do not focus on tailoring content to specific emotional tones in an attempt to improve success. Our findings show that the dominant sentiment expressed in a video does not have a significant impact on its ability to trend or achieve higher success metrics. Therefore, creators should prioritize other factors, such as content quality and community engagement, rather than trying to cater to particular emotional themes."
+)
+```
