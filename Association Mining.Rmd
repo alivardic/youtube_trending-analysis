@@ -2,6 +2,7 @@
 title: "Final Project"
 author: "Alina Hagen"
 date: "`r Sys.Date()`"
+output: github_document
 ---
 ## Data and Text Mining Final Project: Maximizing Success on YouTube's Trending Page: Content Optimization Strategies Based on Analysis of the Top 200 Videos Over the Last Four Years
 
